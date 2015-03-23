@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS += -g -Wall
-LDFLAGS += -lX11
+LDFLAGS += -lX11 -lutil
 
 SRC = term.c
 OBJ = ${SRC:.c=.o}
