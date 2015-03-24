@@ -468,9 +468,9 @@ void main_loop(void)
 
 		DEBUG(__TIME__);
 
-		//XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
+		XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
 
-		ttyread();
+		//ttyread();
 
 		/* Process all events */
 		while (XPending(xw.display)) {
