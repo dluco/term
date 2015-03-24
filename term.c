@@ -8,12 +8,14 @@
 #include <sys/wait.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/Xatom.h>
 #include <pty.h>
 
 /* Macros */
 #define DEBUG(msg, ...) \
 	fprintf(stderr, "DEBUG %s:%s:%d: " msg "\n", \
 			__FILE__, __func__, __LINE__, ##__VA_ARGS__)
+#define LIMIT(x, a, b)	(x) = (x < a) ? a : (x > b) ? b: x
 
 #define DEFAULT_COLS 80
 #define DEFAULT_ROWS 24
@@ -26,9 +28,11 @@ typedef unsigned long ulong;
 typedef unsigned short ushort;
 
 /* Structs */
+/* Internal representation of screen */
 typedef struct {
 	int rows;		/* number of rows */
 	int cols;		/* number of columns */
+	Bool *dirty;	/* dirtyness of lines */
 } Term;
 
 typedef struct {
@@ -43,7 +47,7 @@ typedef struct {
 	Visual *visual;				/* default visual */
 	Colormap colormap;			/* default colormap */
 	XSetWindowAttributes attrs;	/* window attributes */
-	Atom wmdeletewin;			/* atoms */
+	Atom wmdeletewin, netwmpid;	/* atoms */
 	int screen;					/* display screen */
 	int geometry;				/* geometry mask */
 	int x, y;					/* offset from top-left of screen */
@@ -73,6 +77,9 @@ static void ttyread(void);
 static void ttywrite(const char *s, size_t len);
 static void die(char *fmt, ...);
 static void draw(void);
+static void redraw(void);
+static void term_setdirty(int top, int bottom);
+static void term_fulldirty(void);
 static void set_title(char *title);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
@@ -210,6 +217,34 @@ static void draw(void)
 {
 	XCopyArea(xw.display, xw.buf, xw.win, dc.gc,
 			0, 0, xw.width, xw.height, 0, 0);
+}
+
+static void redraw(void)
+{
+	term_fulldirty();
+	draw();
+}
+
+/*
+ * Set term rows in range [top,bottom] as dirty.
+ */
+static void term_setdirty(int top, int bottom)
+{
+	int i;
+
+	LIMIT(top, 0, term.rows-1);
+	LIMIT(bottom, 0, term.rows-1);
+
+	for (i = top; i <= bottom; i++)
+		term.dirty[i] = True;
+}
+
+/*
+ * Set all term rows as dirty.
+ */
+static void term_fulldirty(void)
+{
+	term_setdirty(0, term.rows-1);
 }
 
 /*
@@ -356,6 +391,7 @@ static void resize_all(int width, int height)
 static void x_init(void)
 {
 	XGCValues gcvalues;
+	pid_t pid = getpid();
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
@@ -397,13 +433,20 @@ static void x_init(void)
 	xw.buf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
 			DefaultDepth(xw.display, xw.screen));
 
+	/* Graphics context */
 	gcvalues.graphics_exposures = False;
 	dc.gc = XCreateGC(xw.display, XRootWindow(xw.display, xw.screen),
 			GCGraphicsExposures, &gcvalues);
+	/* Fill buffer with background color */
+	XSetForeground(xw.display, dc.gc, dc.color.pixel);
+	XFillRectangle(xw.display, xw.buf, dc.gc, 0, 0, xw.width, xw.height);
 
-	/* Get atoms */
+	/* Get atom(s) */
 	xw.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
+	xw.netwmpid = XInternAtom(xw.display, "_NET_WM_PID", False);
 	XSetWMProtocols(xw.display, xw.win, &xw.wmdeletewin, 1);
+	XChangeProperty(xw.display, xw.win, xw.netwmpid, XA_CARDINAL, 32,
+			PropModeReplace, (uchar *)&(pid), 1);
 
 	/* (Re)set window title */
 	set_title("term");

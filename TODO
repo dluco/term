@@ -1,9 +1,10 @@
 - load font -> dynamically
-- set window hints
-	- size -> min size
+
 - use XFontSets?
+
 - colors:
 	- color array
 	- load all colors in array
+
 - buffer:
-	- set foreground color
+	- ???
