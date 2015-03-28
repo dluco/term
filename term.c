@@ -2,10 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <locale.h>
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
@@ -15,7 +17,7 @@
 #define DEBUG(msg, ...) \
 	fprintf(stderr, "DEBUG %s:%s:%d: " msg "\n", \
 			__FILE__, __func__, __LINE__, ##__VA_ARGS__)
-#define LIMIT(x, a, b)	(x) = (x < a) ? a : (x > b) ? b: x
+#define LIMIT(x, a, b)	(x) = (x < a) ? a : (x > b) ? b : x
 
 #define DEFAULT_COLS 80
 #define DEFAULT_ROWS 24
@@ -28,6 +30,12 @@ typedef unsigned long ulong;
 typedef unsigned short ushort;
 
 /* Structs */
+typedef struct {
+	pid_t pid;			/* PID of slave pty */
+	int fd;				/* fd of process running in pty */
+	struct winsize ws;	/* window size struct (for openpty and ioctl) */
+} TTY;
+
 /* Internal representation of screen */
 typedef struct {
 	int rows;		/* number of rows */
@@ -36,14 +44,9 @@ typedef struct {
 } Term;
 
 typedef struct {
-	pid_t pid;		/* PID of slave pty */
-	int fd;			/* fd of process running in pty */
-} TTY;
-
-typedef struct {
 	Display *display;			/* X display */
 	Window win;					/* X window */
-	Drawable buf;				/* drawing buffer */
+	Drawable drawbuf;			/* drawing buffer */
 	Visual *visual;				/* default visual */
 	Colormap colormap;			/* default colormap */
 	XSetWindowAttributes attrs;	/* window attributes */
@@ -73,23 +76,27 @@ typedef struct {
 
 /* Function prototypes */
 static ssize_t swrite(int fd, const void *buf, size_t count);
-static void ttyread(void);
-static void ttywrite(const char *s, size_t len);
 static void die(char *fmt, ...);
+
+static void tty_read(void);
+static void tty_write(const char *s, size_t len);
+static void tty_init(void);
+static void tty_resize(int cols, int rows);
+
 static void draw(void);
 static void redraw(void);
+
 static void term_setdirty(int top, int bottom);
 static void term_fulldirty(void);
+static void term_init(int cols, int rows);
 static void set_title(char *title);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
 static void xwindow_resize(int cols, int rows);
-static void resize_all(int width, int height);
 static void x_init(void);
-static void term_init(int cols, int rows);
 static void main_loop(void);
 static void exec_cmd(void);
-static void tty_init(void);
+static void resize_all(int width, int height);
 
 static void event_keypress(XEvent *event);
 static void event_cmessage(XEvent *event);
@@ -110,6 +117,9 @@ static DC dc;
 
 /*
  * Write count bytes to fd.
+ *
+ * Safer than regular write(2), since it makes sure
+ * that all bytes are written.
  */
 static ssize_t swrite(int fd, const void *buf, size_t count)
 {
@@ -126,9 +136,23 @@ static ssize_t swrite(int fd, const void *buf, size_t count)
 }
 
 /*
+ * Print an error message and exit.
+ */
+static void die(char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+
+	exit(EXIT_FAILURE);
+}
+
+/*
  * Read from the tty.
  */
-static void ttyread(void)
+static void tty_read(void)
 {
 	char buf[256];
 	int len;
@@ -138,14 +162,14 @@ static void ttyread(void)
 
 	// FIXME
 	DEBUG("%s", buf);
-	XDrawString(xw.display, xw.buf, dc.gc, 0, 0, buf, len);
+	XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
 	XFlush(xw.display);
 }
 
 /*
  * Write a string to the tty.
  */
-static void ttywrite(const char *s, size_t len)
+static void tty_write(const char *s, size_t len)
 {
 	if (swrite(tty.fd, s, len) == -1)
 		die("write error on tty: %s\n", strerror(errno));
@@ -168,7 +192,7 @@ static void event_keypress(XEvent *event)
 	DEBUG("key pressed: %s", buf);
 
 	// FIXME
-	ttywrite(buf, len);
+	tty_write(buf, len);
 }
 
 /*
@@ -196,26 +220,12 @@ static void event_resize(XEvent *event)
 }
 
 /*
- * Print an error message and exit.
- */
-static void die(char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	exit(EXIT_FAILURE);
-}
-
-/*
  * Draw the buffer into the window.
  * TODO
  */
 static void draw(void)
 {
-	XCopyArea(xw.display, xw.buf, xw.win, dc.gc,
+	XCopyArea(xw.display, xw.drawbuf, xw.win, dc.gc,
 			0, 0, xw.width, xw.height, 0, 0);
 }
 
@@ -360,7 +370,23 @@ static void load_color(XColor *color, char *color_name)
  */
 static void xwindow_resize(int cols, int rows)
 {
-	return;
+	/* Update drawbuf to new dimensions */
+	XFreePixmap(xw.display, xw.drawbuf);
+	xw.drawbuf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
+			DefaultDepth(xw.display, xw.screen));
+}
+
+static void tty_resize(int cols, int rows)
+{
+	/* Update fields in winsize struct */
+	tty.ws.ws_row = rows;
+	tty.ws.ws_col = cols;
+	tty.ws.ws_xpixel = cols * xw.cw;
+	tty.ws.ws_ypixel = rows * xw.ch;
+
+	if (ioctl(tty.fd, TIOCSWINSZ, &tty.ws) < 0)
+		fprintf(stderr, "Unable to set window size: %s\n",
+				strerror(errno));
 }
 
 /*
@@ -383,6 +409,8 @@ static void resize_all(int width, int height)
 
 	DEBUG("Window resized: width = %d, height = %d, cols=%d, rows=%d",
 			xw.width, xw.height, cols, rows);
+
+	tty_resize(cols, rows);
 }
 
 /*
@@ -430,7 +458,7 @@ static void x_init(void)
 			| CWEventMask | CWColormap, &xw.attrs);
 
 	/* Window drawing buffer */
-	xw.buf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
+	xw.drawbuf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
 			DefaultDepth(xw.display, xw.screen));
 
 	/* Graphics context */
@@ -439,7 +467,7 @@ static void x_init(void)
 			GCGraphicsExposures, &gcvalues);
 	/* Fill buffer with background color */
 	XSetForeground(xw.display, dc.gc, dc.color.pixel);
-	XFillRectangle(xw.display, xw.buf, dc.gc, 0, 0, xw.width, xw.height);
+	XFillRectangle(xw.display, xw.drawbuf, dc.gc, 0, 0, xw.width, xw.height);
 
 	/* Get atom(s) */
 	xw.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
@@ -513,7 +541,7 @@ void main_loop(void)
 
 		XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
 
-		//ttyread();
+		//tty_read();
 
 		/* Process all events */
 		while (XPending(xw.display)) {
@@ -594,6 +622,7 @@ static void tty_init(void)
 		/* close slave */
 		close(slave);
 		tty.fd = master;
+		tty.ws = winp;
 		signal(SIGCHLD, sigchld);
 		break;
 	}
@@ -617,6 +646,10 @@ int main(int argc, char *argv[])
 			XDisplayName(xw.display_name));
 	DEBUG("cols = %d", cols);
 	DEBUG("rows = %d", rows);
+
+	/* Set up locale */
+	setlocale(LC_CTYPE, "");
+	XSetLocaleModifiers("");
 
 	term_init(cols, rows);
 
