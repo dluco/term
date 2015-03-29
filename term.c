@@ -23,6 +23,13 @@
 #define DEFAULT_ROWS 24
 #define DEFAULT_FONT "fixed"
 
+/* Enums */
+enum window_state {
+	WIN_VISIBLE	= 1 << 0,
+	WIN_FOCUSED	= 1 << 1,
+	WIN_REDRAW	= 1 << 2,
+};
+
 /* Typedefs for types */
 typedef unsigned char uchar;
 typedef unsigned int uint;
@@ -52,11 +59,12 @@ typedef struct {
 	XSetWindowAttributes attrs;	/* window attributes */
 	Atom wmdeletewin, netwmpid;	/* atoms */
 	int screen;					/* display screen */
-	int geometry;				/* geometry mask */
+	int geomask;				/* geometry mask */
 	int x, y;					/* offset from top-left of screen */
 	int width, height;			/* window width and height */
 	int cw, ch;					/* char width and height */
 	char *display_name;			/* name of display */
+	int state;					/* window state: visible, focused */
 } XWindow;
 
 /* Font structure */
@@ -86,12 +94,14 @@ static void tty_resize(int cols, int rows);
 static void draw(void);
 static void redraw(void);
 
+static void term_resize(int cols, int rows);
 static void term_setdirty(int top, int bottom);
 static void term_fulldirty(void);
 static void term_init(int cols, int rows);
 static void set_title(char *title);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
+static void xwindow_clear(int x1, int y1, int x2, int y2);
 static void xwindow_resize(int cols, int rows);
 static void x_init(void);
 static void main_loop(void);
@@ -101,12 +111,23 @@ static void resize_all(int width, int height);
 static void event_keypress(XEvent *event);
 static void event_cmessage(XEvent *event);
 static void event_resize(XEvent *event);
+static void event_expose(XEvent *event);
+static void event_focus(XEvent *event);
+static void event_unmap(XEvent *event);
+static void event_visibility(XEvent *event);
+
+static int geomask_to_gravity(int mask);
 
 /* Event handlers */
 static void (*event_handler[LASTEvent])(XEvent *) = {
 	[KeyPress] = event_keypress,
 	[ClientMessage] = event_cmessage,
 	[ConfigureNotify] = event_resize,
+	[Expose] = event_expose,
+	[FocusIn] = event_focus,
+	[FocusOut] = event_focus,
+	[UnmapNotify] = event_unmap,
+	[VisibilityNotify] = event_visibility,
 };
 
 /* Globals */
@@ -176,6 +197,22 @@ static void tty_write(const char *s, size_t len)
 }
 
 /*
+ * Resize the tty.
+ */
+static void tty_resize(int cols, int rows)
+{
+	/* Update fields in winsize struct */
+	tty.ws.ws_row = rows;
+	tty.ws.ws_col = cols;
+	tty.ws.ws_xpixel = cols * xw.cw;
+	tty.ws.ws_ypixel = rows * xw.ch;
+
+	if (ioctl(tty.fd, TIOCSWINSZ, &tty.ws) < 0)
+		fprintf(stderr, "Unable to set window size: %s\n",
+				strerror(errno));
+}
+
+/*
  * KeyPress event handler.
  */
 static void event_keypress(XEvent *event)
@@ -220,6 +257,63 @@ static void event_resize(XEvent *event)
 }
 
 /*
+ * Expose event handler.
+ */
+static void event_expose(XEvent *event)
+{
+	XExposeEvent *xexpose = &event->xexpose;
+
+	if (xw.state & WIN_REDRAW) {
+		DEBUG("HERE");
+		if (xexpose->count == 0)
+			xw.state &= ~WIN_REDRAW;
+	}
+
+	redraw();
+}
+
+static void event_focus(XEvent *event)
+{
+	XFocusChangeEvent *xfocus = &event->xfocus;
+
+	if (xfocus->mode == NotifyGrab)
+		return;
+
+	if (event->type == FocusIn) {
+		xw.state |= WIN_FOCUSED;
+		DEBUG("FOCUS IN");
+	} else {
+		xw.state &= ~WIN_FOCUSED;
+		DEBUG("FOCUS OUT");
+	}
+}
+
+/*
+ * UnmapNotify event handler.
+ */
+static void event_unmap(XEvent *event)
+{
+	/* Unset visibility bit of state mask */
+	xw.state &= ~WIN_VISIBLE;
+}
+
+/*
+ * VisibilityNotify event handler.
+ */
+static void event_visibility(XEvent *event)
+{
+	XVisibilityEvent *xvisibility = &event->xvisibility;
+
+	if (xvisibility->state == VisibilityFullyObscured) {
+		/* Unset visibility bit of state mask */
+		xw.state &= ~WIN_VISIBLE;
+	} else if (!(xw.state & WIN_VISIBLE)) {
+		/* XXX */
+		xw.state |= WIN_VISIBLE | WIN_REDRAW;
+	}
+}
+
+/*
  * Draw the buffer into the window.
  * TODO
  */
@@ -233,6 +327,19 @@ static void redraw(void)
 {
 	term_fulldirty();
 	draw();
+}
+
+/*
+ * Resize terminal (internal).
+ */
+static void term_resize(int cols, int rows)
+{
+	/* Reallocate height dependent elements */
+	term.dirty = realloc(term.dirty, rows * sizeof *term.dirty);
+
+	/* Update terminal size */
+	term.cols = cols;
+	term.rows = rows;
 }
 
 /*
@@ -300,6 +407,14 @@ static void set_hints(void)
 	size_hints->base_height = 0; // TODO: replace with 2 * border
 	size_hints->width_inc = xw.cw;
 	size_hints->height_inc = xw.ch;
+	
+	/* Set position and gravity elements */
+	if (xw.geomask & (XValue|YValue)) {
+		size_hints->flags |= USPosition | PWinGravity;
+		size_hints->x = xw.x;
+		size_hints->y = xw.y;
+		size_hints->win_gravity = geomask_to_gravity(xw.geomask);
+	}
 
 	wm_hints->flags = InputHint;
 	wm_hints->input = True;
@@ -365,8 +480,16 @@ static void load_color(XColor *color, char *color_name)
 }
 
 /*
- * Resize and redraw X window.
- * TODO
+ * Clear region of the window, resetting to the background color.
+ */
+static void xwindow_clear(int x1, int y1, int x2, int y2)
+{
+	XSetForeground(xw.display, dc.gc, dc.color.pixel); // FIXME
+	XFillRectangle(xw.display, xw.drawbuf, dc.gc, x1, y1, x2-x1, y2-y1);
+}
+
+/*
+ * Resize X window.
  */
 static void xwindow_resize(int cols, int rows)
 {
@@ -374,19 +497,8 @@ static void xwindow_resize(int cols, int rows)
 	XFreePixmap(xw.display, xw.drawbuf);
 	xw.drawbuf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
 			DefaultDepth(xw.display, xw.screen));
-}
 
-static void tty_resize(int cols, int rows)
-{
-	/* Update fields in winsize struct */
-	tty.ws.ws_row = rows;
-	tty.ws.ws_col = cols;
-	tty.ws.ws_xpixel = cols * xw.cw;
-	tty.ws.ws_ypixel = rows * xw.ch;
-
-	if (ioctl(tty.fd, TIOCSWINSZ, &tty.ws) < 0)
-		fprintf(stderr, "Unable to set window size: %s\n",
-				strerror(errno));
+	xwindow_clear(0, 0, xw.width, xw.height);
 }
 
 /*
@@ -404,13 +516,29 @@ static void resize_all(int width, int height)
 	cols = (xw.width) / xw.cw;
 	rows = (xw.height) / xw.ch;
 
-	/* resize X window */
+	/* Resize term (internal), X window, and tty */
+	term_resize(cols, rows);
 	xwindow_resize(cols, rows);
+	tty_resize(cols, rows);
 
 	DEBUG("Window resized: width = %d, height = %d, cols=%d, rows=%d",
 			xw.width, xw.height, cols, rows);
+}
 
-	tty_resize(cols, rows);
+/*
+ * Convert a geometry mask to a gravity.
+ */
+static int geomask_to_gravity(int mask)
+{
+	switch (mask & (XNegative|YNegative)) {
+	case 0:
+		return NorthWestGravity;
+	case XNegative:
+		return NorthEastGravity;
+	case YNegative:
+		return SouthWestGravity;
+	}
+	return SouthEastGravity;
 }
 
 /*
@@ -442,14 +570,19 @@ static void x_init(void)
 	/* Window geometry */
 	xw.width = term.cols * xw.cw;
 	xw.height = term.rows * xw.ch;
+	/* Convert negative coordinates to absolute */
+	if (xw.geomask & XNegative)
+		xw.x += DisplayWidth(xw.display, xw.screen) - xw.width;
+	if (xw.geomask & YNegative)
+		xw.y += DisplayHeight(xw.display, xw.screen) - xw.height;
 
 	/* Window attributes */
 	xw.attrs.background_pixel = BlackPixel(xw.display, xw.screen);
 	xw.attrs.border_pixel = BlackPixel(xw.display, xw.screen);
+	xw.attrs.colormap = xw.colormap;
 	xw.attrs.bit_gravity = NorthWestGravity;
 	xw.attrs.event_mask = ExposureMask | KeyPressMask |
-		StructureNotifyMask; // TODO
-	xw.attrs.colormap = xw.colormap;
+		StructureNotifyMask | VisibilityChangeMask | FocusChangeMask; // TODO
 
 	xw.win = XCreateWindow(xw.display, XRootWindow(xw.display, xw.screen),
 			xw.x, xw.y, xw.width, xw.height, 0,
@@ -493,8 +626,9 @@ static void x_init(void)
  */
 static void term_init(int cols, int rows)
 {
-	term.cols = cols;
-	term.rows = rows;
+	/* Set initial size, and force allocation
+	 * of internal structures. */
+	term_resize(cols, rows);
 }
 
 /*
@@ -537,8 +671,6 @@ void main_loop(void)
 
 	while (1) {
 
-		DEBUG(__TIME__);
-
 		XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
 
 		//tty_read();
@@ -555,8 +687,6 @@ void main_loop(void)
 
 		sleep(1);
 	}
-
-	return;
 }
 
 /*
@@ -598,6 +728,7 @@ static void tty_init(void)
 	int master, slave;
 	struct winsize winp = {term.rows, term.cols, 0, 0};
 
+	/* Open an available pseudoterminal */
 	if (openpty(&master, &slave, NULL, NULL, &winp) < 0)
 		die("failed to open pty: %s\n", strerror(errno));
 
@@ -605,21 +736,24 @@ static void tty_init(void)
 	case -1:
 		die("fork failed\n");
 		break;
-	case 0:		/* child process */
-		/* create a new process group */
+	case 0:		/* CHILD */
+		/* Create a new process group */
 		setsid(); 
-		/* duplicate file descriptors */
+		/* Duplicate file descriptors */
 		dup2(slave, STDIN_FILENO);
 		dup2(slave, STDOUT_FILENO);
 		dup2(slave, STDERR_FILENO);
-		/* close master and slave */
+		/* Become the controlling terminal */
+		if (ioctl(slave, TIOCSCTTY, NULL) < 0)
+			die("ioctl TIOCSTTY failed: %s\n", strerror(errno));
+		/* Close master and slave */
 		close(slave);
 		close(master);
-		/* exec command */
+		/* Exec command */
 		exec_cmd();
 		break;
-	default:	/* parent process */
-		/* close slave */
+	default:	/* PARENT */
+		/* Close slave */
 		close(slave);
 		tty.fd = master;
 		tty.ws = winp;
@@ -639,7 +773,7 @@ int main(int argc, char *argv[])
 		if (strncmp(argv[i], "-d", 3) == 0 && (i+1) < argc)
 			xw.display_name = argv[++i];
 		else if (strncmp(argv[i], "-g", 3) == 0 && (i+1) < argc)
-			xw.geometry = XParseGeometry(argv[++i], &xw.x, &xw.y, &cols, &rows);
+			xw.geomask = XParseGeometry(argv[++i], &xw.x, &xw.y, &cols, &rows);
 	}
 
 	DEBUG("display name = %s",
