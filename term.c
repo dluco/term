@@ -437,7 +437,8 @@ static void x_init(void)
 
 	/* Colors */
 	xw.colormap = XDefaultColormap(xw.display, xw.screen);
-	load_color(&dc.color, "#ff00ff");
+	//load_color(&dc.color, "#ff00ff");
+	load_color(&dc.color, "blue");
 
 	/* Window geometry */
 	xw.width = term.cols * xw.cw;
