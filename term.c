@@ -17,7 +17,10 @@
 #define DEBUG(msg, ...) \
 	fprintf(stderr, "DEBUG %s:%s:%d: " msg "\n", \
 			__FILE__, __func__, __LINE__, ##__VA_ARGS__)
-#define LIMIT(x, a, b)	(x) = (x < a) ? a : (x > b) ? b : x
+#define MIN(a, b)		((a) < (b)) ? (a) : (b)
+#define MAX(a, b)		((a) > (b)) ? (a) : (b)
+#define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
+#define LEN(a)			(sizeof(a) / sizeof(a)[0])
 
 #define DEFAULT_COLS 80
 #define DEFAULT_ROWS 24
@@ -75,10 +78,19 @@ typedef struct {
 	char *name;
 } XFont;
 
+static char *color_names[] = {
+	"black",
+	"red",
+	"blue",
+};
+
+int color_fg = 1;
+int color_bg = 0;
+
 /* Drawing context */
 typedef struct {
 	XFont font;
-	XColor color;
+	XColor colors[LEN(color_names)];
 	GC gc;
 } DC;
 
@@ -135,6 +147,7 @@ static TTY tty;
 static XWindow xw;
 static Term term;
 static DC dc;
+
 
 /*
  * Write count bytes to fd.
@@ -484,7 +497,7 @@ static void load_color(XColor *color, char *color_name)
  */
 static void xwindow_clear(int x1, int y1, int x2, int y2)
 {
-	XSetForeground(xw.display, dc.gc, dc.color.pixel); // FIXME
+	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, x1, y1, x2-x1, y2-y1);
 }
 
@@ -548,6 +561,7 @@ static void x_init(void)
 {
 	XGCValues gcvalues;
 	pid_t pid = getpid();
+	int i;
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
@@ -566,7 +580,11 @@ static void x_init(void)
 	/* Colors */
 	xw.colormap = XDefaultColormap(xw.display, xw.screen);
 	//load_color(&dc.color, "#ff00ff");
-	load_color(&dc.color, "blue");
+	//load_color(&dc.color, "blue");
+
+	for (i = 0; i < LEN(color_names); i++) {
+		load_color(&dc.colors[i], color_names[i]);
+	}
 
 	/* Window geometry */
 	xw.width = term.cols * xw.cw;
@@ -600,7 +618,7 @@ static void x_init(void)
 	dc.gc = XCreateGC(xw.display, XRootWindow(xw.display, xw.screen),
 			GCGraphicsExposures, &gcvalues);
 	/* Fill buffer with background color */
-	XSetForeground(xw.display, dc.gc, dc.color.pixel);
+	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, 0, 0, xw.width, xw.height);
 
 	/* Get atom(s) */
@@ -666,7 +684,7 @@ void main_loop(void)
 	DEBUG("cols = %d", term.cols);
 	DEBUG("rows = %d", term.rows);
 
-	XSetForeground(xw.display, dc.gc, dc.color.pixel);
+	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
 
 	sleep(1);
 
