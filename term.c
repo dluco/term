@@ -33,6 +33,27 @@ enum window_state {
 	WIN_REDRAW	= 1 << 2,
 };
 
+enum color_class {
+	COLOR0	= 0,
+	COLOR1	= 1,
+	COLOR2	= 2,
+	COLOR3	= 3,
+	COLOR4	= 4,
+	COLOR5	= 5,
+	COLOR6	= 6,
+	COLOR7	= 7,
+	COLOR8	= 8,
+	COLOR9	= 9,
+	COLOR10	= 10,
+	COLOR11	= 11,
+	COLOR12	= 12,
+	COLOR13	= 13,
+	COLOR14	= 14,
+	COLOR15	= 15,
+	COLORUL	= 16,
+	COLORBD	= 17,
+};
+
 /* Typedefs for types */
 typedef unsigned char uchar;
 typedef unsigned int uint;
@@ -80,17 +101,31 @@ typedef struct {
 
 static char *color_names[] = {
 	"black",
+	"red3",
+	"green3",
+	"yellow3",
+	"blue3",
+	"magenta3",
+	"cyan3",
+	"gray90",
+
+	"gray30",
 	"red",
+	"green",
+	"yellow",
 	"blue",
+	"magenta",
+	"cyan",
+	"white",
 };
 
-int color_fg = 1;
+int color_fg = 7;
 int color_bg = 0;
 
 /* Drawing context */
 typedef struct {
 	XFont font;
-	XColor colors[LEN(color_names)];
+	XColor colors[MAX(LEN(color_names), 256)];
 	GC gc;
 } DC;
 
@@ -466,18 +501,17 @@ static void load_font(XFont *font, char *font_name)
  *
  * Courtesy: rxvt-2.7.10/src/main.c
  */
-static int font_max_width(XFontStruct *font_info)
+static int font_max_width(XFontStruct *font)
 {
 	int i, width = 0;
 
-	if (font_info->min_bounds.width == font_info->max_bounds.width)
-		return font_info->min_bounds.width;
-	if (font_info->per_char == NULL)
-		return font_info->max_bounds.width;
+	if (font->min_bounds.width == font->max_bounds.width)
+		return font->min_bounds.width;
+	if (font->per_char == NULL)
+		return font->max_bounds.width;
 
-	for (i = (font_info->max_char_or_byte2 - font_info->min_char_or_byte2); i >= 0; i--) {
-		if (font_info->per_char[i].width > width)
-			width = font_info->per_char[i].width;
+	for (i = (font->max_char_or_byte2 - font->min_char_or_byte2); i >= 0; i--) {
+		width = MAX(width, font->per_char[i].width);
 	}
 
 	return width;
@@ -490,6 +524,29 @@ static void load_color(XColor *color, char *color_name)
 
 	if (!XAllocColor(xw.display, xw.colormap, color))
 		die("Failed to allocate color '%s'\n", color_name);
+}
+
+static void load_colors(void)
+{
+	int i;
+	
+	for (i = 0; i < LEN(color_names); i++) {
+		load_color(&dc.colors[i], color_names[i]);
+	}
+
+	for (i = 16; i < 232; i++) {
+		// TODO
+		dc.colors[i].red = 0;
+		dc.colors[i].green = 0;
+		dc.colors[i].blue = 0;
+		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
+			die("error!");
+	}
+
+	for (i = 232; i < 256; i++) {
+		// TODO
+		continue;
+	}
 }
 
 /*
@@ -561,7 +618,6 @@ static void x_init(void)
 {
 	XGCValues gcvalues;
 	pid_t pid = getpid();
-	int i;
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
@@ -582,9 +638,12 @@ static void x_init(void)
 	//load_color(&dc.color, "#ff00ff");
 	//load_color(&dc.color, "blue");
 
+	/*
 	for (i = 0; i < LEN(color_names); i++) {
 		load_color(&dc.colors[i], color_names[i]);
 	}
+	*/
+	load_colors();
 
 	/* Window geometry */
 	xw.width = term.cols * xw.cw;

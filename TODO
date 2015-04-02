@@ -6,8 +6,8 @@
 	- color array
 	- load all colors in array
 
-	- parse color name or spec:
-		- "black" or "#000000"
+- buffer
 
-- buffer:
-	- ???
+- Xresources:
+	- font
+	- colors: 0-16, bold, underline, cursor
