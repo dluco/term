@@ -21,10 +21,11 @@
 #define MIN(a, b)		((a) < (b)) ? (a) : (b)
 #define MAX(a, b)		((a) > (b)) ? (a) : (b)
 #define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
+#define DEFAULT(a, b)	((a) ? (a) : (b))
 #define LEN(a)			(sizeof(a) / sizeof(a)[0])
 
-#define RES_NAME	"term"
-#define RES_CLASS	"Term"
+#define RES_NAME		"term"
+#define RES_CLASS		"Term"
 #define DEFAULT_COLS	80
 #define DEFAULT_ROWS	24
 #define DEFAULT_FONT	"fixed"
@@ -34,27 +35,6 @@ enum window_state {
 	WIN_VISIBLE	= 1 << 0,
 	WIN_FOCUSED	= 1 << 1,
 	WIN_REDRAW	= 1 << 2,
-};
-
-enum color_class {
-	COLOR0	= 0,
-	COLOR1	= 1,
-	COLOR2	= 2,
-	COLOR3	= 3,
-	COLOR4	= 4,
-	COLOR5	= 5,
-	COLOR6	= 6,
-	COLOR7	= 7,
-	COLOR8	= 8,
-	COLOR9	= 9,
-	COLOR10	= 10,
-	COLOR11	= 11,
-	COLOR12	= 12,
-	COLOR13	= 13,
-	COLOR14	= 14,
-	COLOR15	= 15,
-	COLORUL	= 16,
-	COLORBD	= 17,
 };
 
 /* Typedefs for types */
@@ -131,8 +111,13 @@ int color_bg = 0;
 typedef struct {
 	GC gc;
 	XFont font;
-	XColor colors[MAX(LEN(color_names), 256)];
+	XColor colors[256];
 } DC;
+
+typedef struct {
+	XFont font;
+	char *colors[16];
+} XResources;
 
 /* Function prototypes */
 static ssize_t swrite(int fd, const void *buf, size_t count);
@@ -194,6 +179,7 @@ static TTY tty;
 static XWindow xw;
 static Term term;
 static DC dc;
+static XResources xres;
 static XrmDatabase rDB;
 static char *res_name = NULL;
 static char *res_class = RES_CLASS;
@@ -578,7 +564,7 @@ static void load_colors(void)
 	int i;
 	
 	/* Load colors [0-15] */
-	for (i = 0; i < LEN(color_names); i++) {
+	for (i = 0; i < 16; i++) {
 		if (!XAllocNamedColor(xw.display, xw.colormap, color_names[i],
 					&dc.colors[i], &dc.colors[i]))
 			die("Failed to allocate color '%s'\n", color_names[i]);
@@ -705,27 +691,22 @@ static void x_init(void)
 		serverDB = XrmGetStringDatabase(s);
 		XrmMergeDatabases(serverDB, &rDB);
 	}
-
 	/* Get all resources from database */
 	extract_resources();
 
-	/* Load font */
-	/* TODO: dynamically load font */
-	if (!dc.font.name) dc.font.name = strdup(DEFAULT_FONT);
+	/* Load font, in order:
+	 * 1. Resource database
+	 * 2. Commandline
+	 * 3. Default
+	 */
+	dc.font.name = DEFAULT(xres.font.name, DEFAULT(dc.font.name, DEFAULT_FONT));
 	load_font(&dc.font, dc.font.name);
+
 	DEBUG("font width = %d", xw.cw);
 	DEBUG("font height = %d", xw.ch);
 
 	/* Colors */
 	xw.colormap = XDefaultColormap(xw.display, xw.screen);
-	//load_color(&dc.color, "#ff00ff");
-	//load_color(&dc.color, "blue");
-
-	/*
-	for (i = 0; i < LEN(color_names); i++) {
-		load_color(&dc.colors[i], color_names[i]);
-	}
-	*/
 	load_colors();
 
 	/* Window geometry */
@@ -808,14 +789,30 @@ static char *get_resource(char *name, char *class)
  */
 static void extract_resources(void)
 {
-	char *s;
+	char *s, color_name[16], color_class[16];
 	uint cols, rows;
+	int i;
+
+	/* Resources that cannot be applied immediately */
 
 	/* Font resource */
 	if ((s = get_resource("font", "Font")) != NULL) {
-		if (dc.font.name) free(dc.font.name);
-		dc.font.name = strdup(s);
+		xres.font.name = strdup(s);
 	}
+
+	/* Color resources [0-15] */
+	for (i = 0; i < 16; i++) {
+		sprintf(color_name, "color%d", i);
+		sprintf(color_class, "Color%d", i);
+
+		DEBUG("%s, %s", color_name, color_class);
+		if ((s = get_resource(color_name, color_class)) != NULL) {
+			DEBUG("%s: %s", color_name, s);
+			xres.colors[i] = strdup(s);
+		}
+	}
+
+	/* Resources that can be applied immediately */
 
 	/* Border width resource */
 	if ((s = get_resource("borderWidth", "BorderWidth")) != NULL) {
@@ -984,7 +981,7 @@ int main(int argc, char *argv[])
 	/* FIXME: Parse options and arguments */
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "-f", 3) == 0 && (i+1) < argc)
-			dc.font.name = strdup(argv[++i]);
+			dc.font.name = argv[++i];
 		else if (strncmp(argv[i], "-d", 3) == 0 && (i+1) < argc)
 			xw.display_name = argv[++i];
 		else if (strncmp(argv[i], "-g", 3) == 0 && (i+1) < argc)
