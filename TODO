@@ -5,6 +5,8 @@
 - colors:
 	- color array
 	- load all colors in array
+	- 16-231: + 0x28
+	- 232-255: + 0xA0A0A
 
 - buffer
 

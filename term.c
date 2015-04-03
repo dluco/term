@@ -119,7 +119,8 @@ static char *color_names[] = {
 	"white",
 };
 
-int color_fg = 7;
+//int color_fg = 7;
+int color_fg = 1;
 int color_bg = 0;
 
 /* Drawing context */
@@ -145,7 +146,9 @@ static void term_resize(int cols, int rows);
 static void term_setdirty(int top, int bottom);
 static void term_fulldirty(void);
 static void term_init(int cols, int rows);
+
 static void set_title(char *title);
+static void set_urgency(int urgent);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
 static void xwindow_clear(int x1, int y1, int x2, int y2);
@@ -329,6 +332,7 @@ static void event_focus(XEvent *event)
 
 	if (event->type == FocusIn) {
 		xw.state |= WIN_FOCUSED;
+		set_urgency(0);
 		DEBUG("FOCUS IN");
 	} else {
 		xw.state &= ~WIN_FOCUSED;
@@ -424,6 +428,15 @@ static void set_title(char *title)
 	XFree(prop.value);
 }
 
+static void set_urgency(int urgent)
+{
+	XWMHints *wm_hints = XGetWMHints(xw.display, xw.win);
+
+	// TODO
+	XSetWMHints(xw.display, xw.win, wm_hints);
+	XFree(wm_hints);
+}
+
 /*
  * Set size hints for window.
  */
@@ -517,35 +530,35 @@ static int font_max_width(XFontStruct *font)
 	return width;
 }
 
-static void load_color(XColor *color, char *color_name)
-{
-	if (!XParseColor(xw.display, xw.colormap, color_name, color))
-		die("Failed to parse color '%s'\n", color_name);
-
-	if (!XAllocColor(xw.display, xw.colormap, color))
-		die("Failed to allocate color '%s'\n", color_name);
-}
-
 static void load_colors(void)
 {
 	int i;
 	
+	/* Load colors [0-15] */
 	for (i = 0; i < LEN(color_names); i++) {
-		load_color(&dc.colors[i], color_names[i]);
+		if (!XAllocNamedColor(xw.display, xw.colormap, color_names[i],
+					&dc.colors[i], &dc.colors[i]))
+			die("Failed to allocate color '%s'\n", color_names[i]);
 	}
 
+	/* Load xterm colors [16-231] */
 	for (i = 16; i < 232; i++) {
 		// TODO
 		dc.colors[i].red = 0;
 		dc.colors[i].green = 0;
 		dc.colors[i].blue = 0;
 		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
-			die("error!");
+			die("Failed to allocate color %d\n", i);
 	}
 
+	/* Load xterm (grayscale) colors [232-255] */
 	for (i = 232; i < 256; i++) {
 		// TODO
-		continue;
+		dc.colors[i].red = 0;
+		dc.colors[i].green = 0;
+		dc.colors[i].blue = 0;
+		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
+			die("Failed to allocate color %d\n", i);
 	}
 }
 
@@ -695,8 +708,6 @@ static void x_init(void)
 	set_hints();
 
 	XSync(xw.display, False);
-
-	return;
 }
 
 /*
