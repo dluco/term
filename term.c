@@ -11,6 +11,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
+#include <X11/Xresource.h>
 #include <pty.h>
 
 /* Macros */
@@ -22,9 +23,11 @@
 #define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
 #define LEN(a)			(sizeof(a) / sizeof(a)[0])
 
-#define DEFAULT_COLS 80
-#define DEFAULT_ROWS 24
-#define DEFAULT_FONT "fixed"
+#define RES_NAME	"term"
+#define RES_CLASS	"Term"
+#define DEFAULT_COLS	80
+#define DEFAULT_ROWS	24
+#define DEFAULT_FONT	"fixed"
 
 /* Enums */
 enum window_state {
@@ -87,6 +90,7 @@ typedef struct {
 	int x, y;					/* offset from top-left of screen */
 	int width, height;			/* window width and height */
 	int cw, ch;					/* char width and height */
+	int border;					/* window border width (pixels) */
 	char *display_name;			/* name of display */
 	int state;					/* window state: visible, focused */
 } XWindow;
@@ -125,9 +129,9 @@ int color_bg = 0;
 
 /* Drawing context */
 typedef struct {
+	GC gc;
 	XFont font;
 	XColor colors[MAX(LEN(color_names), 256)];
-	GC gc;
 } DC;
 
 /* Function prototypes */
@@ -140,6 +144,7 @@ static void tty_init(void);
 static void tty_resize(int cols, int rows);
 
 static void draw(void);
+static void draw_region(int col1, int row1, int col2, int row2);
 static void redraw(void);
 
 static void term_resize(int cols, int rows);
@@ -151,12 +156,16 @@ static void set_title(char *title);
 static void set_urgency(int urgent);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
+static void term_clear(int col1, int row1, int col2, int row2);
 static void xwindow_clear(int x1, int y1, int x2, int y2);
 static void xwindow_resize(int cols, int rows);
 static void x_init(void);
 static void main_loop(void);
 static void exec_cmd(void);
 static void resize_all(int width, int height);
+
+static char *get_resource(char *name, char *class);
+static void extract_resources(void);
 
 static void event_keypress(XEvent *event);
 static void event_cmessage(XEvent *event);
@@ -185,6 +194,9 @@ static TTY tty;
 static XWindow xw;
 static Term term;
 static DC dc;
+static XrmDatabase rDB;
+static char *res_name = NULL;
+static char *res_class = RES_CLASS;
 
 
 /*
@@ -371,10 +383,41 @@ static void event_visibility(XEvent *event)
  */
 static void draw(void)
 {
+	draw_region(0, 0, term.cols, term.rows);
 	XCopyArea(xw.display, xw.drawbuf, xw.win, dc.gc,
 			0, 0, xw.width, xw.height, 0, 0);
 }
 
+/*
+ * Copy the internal terminal buffer to the window buffer,
+ * within the specified region.
+ * TODO
+ */
+static void draw_region(int col1, int row1, int col2, int row2)
+{
+	int row;
+	//int col;
+
+	/* Check if window is visible */
+	if (!(xw.state & WIN_VISIBLE))
+		return;
+
+	for (row = row1; row < row2; row++) {
+		/* Skip clean lines */
+		if (!term.dirty[row])
+			continue;
+
+		/* Clear current row in buffer and reset dirtyness */
+		term_clear(0, row, term.cols, row);
+		term.dirty[row] = False;
+
+		/* ... */
+	}
+}
+
+/*
+ * Force a complete redraw of the window.
+ */
 static void redraw(void)
 {
 	term_fulldirty();
@@ -464,8 +507,8 @@ static void set_hints(void)
 	size_hints->flags = PSize | PBaseSize | PResizeInc;
 	size_hints->width = xw.width;
 	size_hints->height = xw.height;
-	size_hints->base_width = 0; // TODO: replace with 2 * border
-	size_hints->base_height = 0; // TODO: replace with 2 * border
+	size_hints->base_width = 2 * xw.border;
+	size_hints->base_height = 2 * xw.border;
 	size_hints->width_inc = xw.cw;
 	size_hints->height_inc = xw.ch;
 	
@@ -563,7 +606,20 @@ static void load_colors(void)
 }
 
 /*
- * Clear region of the window, resetting to the background color.
+ * Clear region of the window (column,row coordinates).
+ */
+static void term_clear(int col1, int row1, int col2, int row2)
+{
+	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
+	XFillRectangle(xw.display, xw.drawbuf, dc.gc,
+			xw.border + col1 * xw.cw,
+			xw.border + row1 * xw.ch,
+			(col2-col1+1) * xw.cw,
+			(row2-row1+1) * xw.ch);
+}
+
+/*
+ * Clear region of the window (absolute x,y coordinates).
  */
 static void xwindow_clear(int x1, int y1, int x2, int y2)
 {
@@ -596,8 +652,8 @@ static void resize_all(int width, int height)
 	if (height != 0)
 		xw.height = height;
 
-	cols = (xw.width) / xw.cw;
-	rows = (xw.height) / xw.ch;
+	cols = (xw.width - 2* xw.border) / xw.cw;
+	rows = (xw.height - 2 * xw.border) / xw.ch;
 
 	/* Resize term (internal), X window, and tty */
 	term_resize(cols, rows);
@@ -629,8 +685,10 @@ static int geomask_to_gravity(int mask)
  */
 static void x_init(void)
 {
+	XrmDatabase serverDB;
 	XGCValues gcvalues;
 	pid_t pid = getpid();
+	char *s;
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
@@ -640,9 +698,21 @@ static void x_init(void)
 	xw.screen = XDefaultScreen(xw.display);
 	xw.visual = XDefaultVisual(xw.display, xw.screen);
 
+	/* Initialize rDB resources database */
+	XrmInitialize();
+	/* Get the resources from the server, if any */
+	if ((s = XResourceManagerString(xw.display)) != NULL) {
+		serverDB = XrmGetStringDatabase(s);
+		XrmMergeDatabases(serverDB, &rDB);
+	}
+
+	/* Get all resources from database */
+	extract_resources();
+
 	/* Load font */
 	/* TODO: dynamically load font */
-	load_font(&dc.font, DEFAULT_FONT);
+	if (!dc.font.name) dc.font.name = strdup(DEFAULT_FONT);
+	load_font(&dc.font, dc.font.name);
 	DEBUG("font width = %d", xw.cw);
 	DEBUG("font height = %d", xw.ch);
 
@@ -659,8 +729,8 @@ static void x_init(void)
 	load_colors();
 
 	/* Window geometry */
-	xw.width = term.cols * xw.cw;
-	xw.height = term.rows * xw.ch;
+	xw.width = term.cols * xw.cw + 2 * xw.border;
+	xw.height = term.rows * xw.ch + 2 * xw.border;
 	/* Convert negative coordinates to absolute */
 	if (xw.geomask & XNegative)
 		xw.x += DisplayWidth(xw.display, xw.screen) - xw.width;
@@ -711,6 +781,55 @@ static void x_init(void)
 }
 
 /*
+ * Extract the named resource from the database and
+ * return a pointer to the static string containing it.
+ */
+static char *get_resource(char *name, char *class)
+{
+	static char resource[256];
+	char str_name[256], str_class[256];
+	XrmValue value;
+	char *str_type;
+
+	sprintf(str_name, "%s.%s", res_name, name);
+	sprintf(str_class, "%s.%s", res_class, class);
+
+	if (XrmGetResource(rDB, str_name, str_class, &str_type, &value) == True) {
+		strncpy(resource, value.addr, MIN((int)value.size, sizeof(resource)));
+		return resource;
+	}
+
+	return NULL;
+}
+
+/*
+ * Search and load all applicable resources from the
+ * resource database.
+ */
+static void extract_resources(void)
+{
+	char *s;
+	uint cols, rows;
+
+	/* Font resource */
+	if ((s = get_resource("font", "Font")) != NULL) {
+		if (dc.font.name) free(dc.font.name);
+		dc.font.name = strdup(s);
+	}
+
+	/* Border width resource */
+	if ((s = get_resource("borderWidth", "BorderWidth")) != NULL) {
+		xw.border = atoi(s);
+	}
+
+	/* Geometry resource */
+	if ((s = get_resource("geometry", "Geometry")) != NULL) {
+		xw.geomask = XParseGeometry(s, &xw.x, &xw.y, &cols, &rows);
+		term_resize(cols, rows);
+	}
+}
+
+/*
  * Initialize Term.
  */
 static void term_init(int cols, int rows)
@@ -722,6 +841,7 @@ static void term_init(int cols, int rows)
 
 /*
  * Main loop of terminal.
+ * TODO
  */
 void main_loop(void)
 {
@@ -780,6 +900,7 @@ void main_loop(void)
 
 /*
  * Exec shell or command.
+ * TODO
  */
 static void exec_cmd(void)
 {
@@ -806,6 +927,7 @@ void sigchld(int signal)
 	ret = WIFEXITED(status) ? WEXITSTATUS(status) : EXIT_FAILURE;
 	if (ret != EXIT_SUCCESS)
 		die("child exited with error '%d'\n", status);
+
 	exit(EXIT_SUCCESS);
 }
 
@@ -854,16 +976,30 @@ static void tty_init(void)
 int main(int argc, char *argv[])
 {
 	uint cols = DEFAULT_COLS, rows = DEFAULT_ROWS;
-	xw.display_name = NULL;
+	char *p;
 	int i;
+	xw.display_name = NULL;
+	dc.font.name = NULL;
 
 	/* FIXME: Parse options and arguments */
 	for (i = 1; i < argc; i++) {
-		if (strncmp(argv[i], "-d", 3) == 0 && (i+1) < argc)
+		if (strncmp(argv[i], "-f", 3) == 0 && (i+1) < argc)
+			dc.font.name = strdup(argv[++i]);
+		else if (strncmp(argv[i], "-d", 3) == 0 && (i+1) < argc)
 			xw.display_name = argv[++i];
 		else if (strncmp(argv[i], "-g", 3) == 0 && (i+1) < argc)
 			xw.geomask = XParseGeometry(argv[++i], &xw.x, &xw.y, &cols, &rows);
+		else if (strncmp(argv[i], "-n", 3) == 0 && (i+1) < argc)
+			res_name = argv[++i];
+		else if (strncmp(argv[i], "-c", 3) == 0 && (i+1) < argc)
+			res_class = argv[++i];
 	}
+
+	if (!res_name) {
+		res_name = (p = strrchr(argv[0], '/')) ? (p+1) : RES_NAME;
+	}
+	DEBUG("resource name = %s", res_name);
+	DEBUG("resource class = %s", res_class);
 
 	DEBUG("display name = %s",
 			XDisplayName(xw.display_name));

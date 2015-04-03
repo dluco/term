@@ -1,4 +1,4 @@
-- load font -> dynamically
+- load font -> dynamically (DONE)
 
 - use XFontSets?
 
@@ -8,8 +8,8 @@
 	- 16-231: + 0x28
 	- 232-255: + 0xA0A0A
 
-- buffer
-
 - Xresources:
-	- font
+	- font -> DONE
+	- geometry -> DONE
+	- border-width -> DONE
 	- colors: 0-16, bold, underline, cursor
