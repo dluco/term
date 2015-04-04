@@ -13,3 +13,6 @@
 	- geometry -> DONE
 	- border-width -> DONE
 	- colors: 0-16, bold, underline, cursor
+
+- XEmbed:
+	- parent window

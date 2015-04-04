@@ -30,6 +30,9 @@
 #define DEFAULT_ROWS	24
 #define DEFAULT_FONT	"fixed"
 
+#define XEMBED_FOCUS_IN		4
+#define XEMBED_FOCUS_OUT	5
+
 /* Enums */
 enum window_state {
 	WIN_VISIBLE	= 1 << 0,
@@ -64,7 +67,8 @@ typedef struct {
 	Visual *visual;				/* default visual */
 	Colormap colormap;			/* default colormap */
 	XSetWindowAttributes attrs;	/* window attributes */
-	Atom wmdeletewin, netwmpid;	/* atoms */
+	Atom wmdeletewin,			/* atoms */
+		 netwmpid, xembed;
 	int screen;					/* display screen */
 	int geomask;				/* geometry mask */
 	int x, y;					/* offset from top-left of screen */
@@ -290,6 +294,14 @@ static void event_cmessage(XEvent *event)
 	if (event->xclient.data.l[0] == xw.wmdeletewin) {
 		XCloseDisplay(xw.display);
 		exit(EXIT_SUCCESS);
+	} else if (event->xclient.message_type == xw.xembed && event->xclient.format == 32) {
+		/* XEmbed message */
+		if (event->xclient.data.l[1] == XEMBED_FOCUS_IN) {
+			xw.state |= WIN_FOCUSED;
+			set_urgency(0);
+		} else if (event->xclient.data.l[1] == XEMBED_FOCUS_OUT) {
+			xw.state &= ~WIN_FOCUSED;
+		}
 	}
 }
 
@@ -747,6 +759,7 @@ static void x_init(void)
 	/* Get atom(s) */
 	xw.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
 	xw.netwmpid = XInternAtom(xw.display, "_NET_WM_PID", False);
+	xw.xembed = XInternAtom(xw.display, "_XEMBED", False);
 	XSetWMProtocols(xw.display, xw.win, &xw.wmdeletewin, 1);
 	XChangeProperty(xw.display, xw.win, xw.netwmpid, XA_CARDINAL, 32,
 			PropModeReplace, (uchar *)&(pid), 1);
