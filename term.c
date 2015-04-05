@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
@@ -70,6 +71,7 @@ typedef struct {
 	Atom wmdeletewin,			/* atoms */
 		 netwmpid, xembed;
 	int screen;					/* display screen */
+	Window parent;				/* Parent window */
 	int geomask;				/* geometry mask */
 	int x, y;					/* offset from top-left of screen */
 	int width, height;			/* window width and height */
@@ -192,8 +194,8 @@ static char *res_class = RES_CLASS;
 /*
  * Write count bytes to fd.
  *
- * Safer than regular write(2), since it makes sure
- * that all bytes are written.
+ * Safer than regular write(2), since it ensures
+ * that all bytes are written to fd.
  */
 static ssize_t swrite(int fd, const void *buf, size_t count)
 {
@@ -236,8 +238,8 @@ static void tty_read(void)
 
 	// FIXME
 	DEBUG("%s", buf);
-	XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
-	XFlush(xw.display);
+	//XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
+	//XFlush(xw.display);
 }
 
 /*
@@ -738,7 +740,9 @@ static void x_init(void)
 	xw.attrs.event_mask = ExposureMask | KeyPressMask |
 		StructureNotifyMask | VisibilityChangeMask | FocusChangeMask; // TODO
 
-	xw.win = XCreateWindow(xw.display, XRootWindow(xw.display, xw.screen),
+	xw.parent = DEFAULT(xw.parent, XRootWindow(xw.display, xw.screen));
+
+	xw.win = XCreateWindow(xw.display, xw.parent,
 			xw.x, xw.y, xw.width, xw.height, 0,
 			XDefaultDepth(xw.display, xw.screen), InputOutput,
 			xw.visual, CWBackPixel | CWBorderPixel | CWBitGravity
@@ -858,6 +862,8 @@ void main_loop(void)
 	XEvent event;
 	int width = xw.width;
 	int height = xw.height;
+	fd_set read_fds;
+	struct timespec *tv = NULL; // Block indefinitely
 
 	/* Wait for window to be mapped */
 	while (1) {
@@ -886,17 +892,31 @@ void main_loop(void)
 
 	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
 
-	sleep(1);
+	//sleep(1);
 
 	while (1) {
+		/* Reset file descriptor set */
+		FD_ZERO(&read_fds);
+		FD_SET(tty.fd, &read_fds);
+
+		/* Check if fd(s) are ready to be read */
+		if (pselect(tty.fd+1, &read_fds, NULL, NULL, tv, NULL) < 0) {
+			if (errno == EINTR)
+				continue; // Interrupted
+			die("pselect failed: %s\n", strerror(errno));
+		}
+
+		if (FD_ISSET(tty.fd, &read_fds)) {
+			/* Read from tty device */
+			//tty_read();
+		}
 
 		XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
 
-		//tty_read();
-
-		/* Process all events */
+		/* Process all pending events */
 		while (XPending(xw.display)) {
 			XNextEvent(xw.display, &event);
+
 			if (XFilterEvent(&event, None))
 				continue;
 			/* Search event handlers for event type */
@@ -920,6 +940,14 @@ static void exec_cmd(void)
 		die("Failed to get shell name\n");
 
 	args = (char *[]) {prog, NULL};
+
+	/* Default signal handlers */
+	signal(SIGALRM, SIG_DFL);
+	signal(SIGCHLD, SIG_DFL);
+	signal(SIGHUP, SIG_DFL);
+	signal(SIGINT, SIG_DFL);
+	signal(SIGQUIT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
 
 	execvp(prog, args);
 }
@@ -989,6 +1017,7 @@ int main(int argc, char *argv[])
 	char *p;
 	int i;
 	xw.display_name = NULL;
+	xw.parent = None;
 	dc.font.name = NULL;
 
 	/* FIXME: Parse options and arguments */
@@ -999,6 +1028,8 @@ int main(int argc, char *argv[])
 			xw.display_name = argv[++i];
 		else if (strncmp(argv[i], "-g", 3) == 0 && (i+1) < argc)
 			xw.geomask = XParseGeometry(argv[++i], &xw.x, &xw.y, &cols, &rows);
+		else if (strncmp(argv[i], "-w", 3) == 0 && (i+1) < argc)
+			xw.parent = strtol(argv[++i], NULL, 0);
 		else if (strncmp(argv[i], "-n", 3) == 0 && (i+1) < argc)
 			res_name = argv[++i];
 		else if (strncmp(argv[i], "-c", 3) == 0 && (i+1) < argc)
@@ -1011,8 +1042,7 @@ int main(int argc, char *argv[])
 	DEBUG("resource name = %s", res_name);
 	DEBUG("resource class = %s", res_class);
 
-	DEBUG("display name = %s",
-			XDisplayName(xw.display_name));
+	DEBUG("display name = %s", XDisplayName(xw.display_name));
 	DEBUG("cols = %d", cols);
 	DEBUG("rows = %d", rows);
 
@@ -1021,7 +1051,6 @@ int main(int argc, char *argv[])
 	XSetLocaleModifiers("");
 
 	term_init(cols, rows);
-
 	x_init();
 
 	main_loop();
