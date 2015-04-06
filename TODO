@@ -1,5 +1,3 @@
-- load font -> dynamically (DONE)
-
 - use XFontSets?
 
 - colors:
@@ -12,7 +10,8 @@
 	- font -> DONE
 	- geometry -> DONE
 	- border-width -> DONE
-	- colors: 0-16, bold, underline, cursor
+	- colors: 0-16
 
-- XEmbed:
-	- parent window
+- Selections:
+	- get selection (primary, clipboard)
+	- set selection (primary, clipboard)

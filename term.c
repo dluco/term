@@ -89,6 +89,10 @@ typedef struct {
 	char *name;
 } XFont;
 
+typedef struct {
+	char *primary, *clipboard;
+} Selection;
+
 static char *color_names[] = {
 	"black",
 	"red3",
@@ -184,6 +188,7 @@ static void (*event_handler[LASTEvent])(XEvent *) = {
 static TTY tty;
 static XWindow xw;
 static Term term;
+static Selection sel;
 static DC dc;
 static XResources xres;
 static XrmDatabase rDB;
@@ -457,6 +462,12 @@ static void term_setdirty(int top, int bottom)
 static void term_fulldirty(void)
 {
 	term_setdirty(0, term.rows-1);
+}
+
+static void sel_init(void)
+{
+	sel.primary = NULL;
+	sel.clipboard = NULL;
 }
 
 /*
@@ -1052,6 +1063,7 @@ int main(int argc, char *argv[])
 
 	term_init(cols, rows);
 	x_init();
+	sel_init();
 
 	main_loop();
 
