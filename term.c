@@ -238,7 +238,7 @@ static void tty_read(void)
 	char buf[256];
 	int len;
 
-	if ((len = read(tty.fd, buf, sizeof buf)) < 0)
+	if ((len = read(tty.fd, buf, sizeof(buf))) < 0)
 		die("Failed to read from shell: %s\n", strerror(errno));
 
 	// FIXME
@@ -282,7 +282,7 @@ static void event_keypress(XEvent *event)
 	char buf[32];
 	int len;
 
-	len = XLookupString(key_event, buf, sizeof buf, &keysym, NULL);
+	len = XLookupString(key_event, buf, sizeof(buf), &keysym, NULL);
 	if (len == 0)
 		return;
 
@@ -435,7 +435,7 @@ static void redraw(void)
 static void term_resize(int cols, int rows)
 {
 	/* Reallocate height dependent elements */
-	term.dirty = realloc(term.dirty, rows * sizeof *term.dirty);
+	term.dirty = realloc(term.dirty, rows * sizeof(*term.dirty));
 
 	/* Update terminal size */
 	term.cols = cols;
@@ -715,9 +715,11 @@ static void x_init(void)
 	if ((s = XResourceManagerString(xw.display)) != NULL) {
 		serverDB = XrmGetStringDatabase(s);
 		XrmMergeDatabases(serverDB, &rDB);
+
+		memset(&xres, 0, sizeof(xres));
+		/* Get all resources from database */
+		extract_resources();
 	}
-	/* Get all resources from database */
-	extract_resources();
 
 	/* Load font, in order:
 	 * 1. Resource database
@@ -764,6 +766,7 @@ static void x_init(void)
 			DefaultDepth(xw.display, xw.screen));
 
 	/* Graphics context */
+	memset(&gcvalues, 0, sizeof(gcvalues));
 	gcvalues.graphics_exposures = False;
 	dc.gc = XCreateGC(xw.display, XRootWindow(xw.display, xw.screen),
 			GCGraphicsExposures, &gcvalues);
