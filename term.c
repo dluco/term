@@ -586,13 +586,17 @@ static int font_max_width(XFontStruct *font)
 
 static void load_colors(void)
 {
+	char *name;
 	int i;
 	
 	/* Load colors [0-15] */
 	for (i = 0; i < 16; i++) {
-		if (!XAllocNamedColor(xw.display, xw.colormap, color_names[i],
+		/* Use resource color, if set */
+		name = DEFAULT(xres.colors[i], color_names[i]);
+
+		if (!XAllocNamedColor(xw.display, xw.colormap, name,
 					&dc.colors[i], &dc.colors[i]))
-			die("Failed to allocate color '%s'\n", color_names[i]);
+			die("Failed to allocate color '%s'\n", name);
 	}
 
 	/* Load xterm colors [16-231] */
