@@ -24,6 +24,7 @@
 #define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
 #define DEFAULT(a, b)	((a) ? (a) : (b))
 #define LEN(a)			(sizeof(a) / sizeof(a)[0])
+#define MODBIT(x, set, bit) ((set) ? ((x) |= (bit)) : ((x) &= ~(bit)))
 
 #define RES_NAME		"term"
 #define RES_CLASS		"Term"
@@ -91,6 +92,7 @@ typedef struct {
 
 typedef struct {
 	char *primary, *clipboard;
+	Atom target;
 } Selection;
 
 static char *color_names[] = {
@@ -297,8 +299,8 @@ static void event_keypress(XEvent *event)
  */
 static void event_cmessage(XEvent *event)
 {
-	/* Destroy window */
 	if (event->xclient.data.l[0] == xw.wmdeletewin) {
+		/* Destroy window */
 		XCloseDisplay(xw.display);
 		exit(EXIT_SUCCESS);
 	} else if (event->xclient.message_type == xw.xembed && event->xclient.format == 32) {
@@ -332,7 +334,7 @@ static void event_expose(XEvent *event)
 	XExposeEvent *xexpose = &event->xexpose;
 
 	if (xw.state & WIN_REDRAW) {
-		DEBUG("HERE");
+		DEBUG("HERE"); // FIXME
 		if (xexpose->count == 0)
 			xw.state &= ~WIN_REDRAW;
 	}
@@ -380,6 +382,43 @@ static void event_visibility(XEvent *event)
 		/* XXX */
 		xw.state |= WIN_VISIBLE | WIN_REDRAW;
 	}
+}
+
+/*
+ * SelectionNotify event handler.
+ */
+static void event_selnotify(XEvent *event)
+{
+	XSelectionEvent *xselev;
+	ulong offset, nitems, remaining;
+	Atom type;
+	int format;
+	uchar *data;
+
+	xselev = (XSelectionEvent *)event;
+
+	if (xselev->property == None) {
+		fprintf(stderr, "Selection conversion refused\n");
+		return;
+	}
+
+	/* Get selection contents in chunks */
+	do {
+		/*
+		 * TODO: length of retreived chunk?
+		 */
+		XGetWindowProperty(xw.display, xw.win, xselev->property,
+				offset, 1000000, False, (Atom)AnyPropertyType,
+				&type, &format, &nitems, &remaining, &data);
+
+		puts(data);
+
+		XFree(data);
+
+		offset += (nitems * format) / 32;
+	} while (remaining > 0);
+
+	XDeleteProperty(xselev->display, xselev->requestor, xselev->property);
 }
 
 /*
@@ -468,6 +507,19 @@ static void sel_init(void)
 {
 	sel.primary = NULL;
 	sel.clipboard = NULL;
+	sel.target = XInternAtom(xw.display, "UTF8_STRING", True);
+	if (sel.target == None)
+		sel.target = XA_STRING;
+}
+
+static void sel_paste(Atom selection)
+{
+	/**
+	 * TODO: use the timestamp of the event that caused
+	 * this request to be made.
+	 */
+	XConvertSelection(xw.display, selection, sel.target,
+			sel.target, xw.win, CurrentTime);
 }
 
 /*
@@ -486,7 +538,7 @@ static void set_urgency(int urgent)
 {
 	XWMHints *wm_hints = XGetWMHints(xw.display, xw.win);
 
-	// TODO
+	MODBIT(wm_hints->flags, urgent, XUrgencyHint);
 	XSetWMHints(xw.display, xw.win, wm_hints);
 	XFree(wm_hints);
 }
@@ -512,7 +564,7 @@ static void set_hints(void)
 
 	/* Class hints */
 	if (!(class_hints = XAllocClassHint())) {
-		die("Failed to allocate window wm hints\n");
+		die("Failed to allocate window class hints\n");
 	}
 
 	size_hints->flags = PSize | PBaseSize | PResizeInc;

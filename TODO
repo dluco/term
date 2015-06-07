@@ -10,8 +10,11 @@
 	- font -> DONE
 	- geometry -> DONE
 	- border-width -> DONE
-	- colors: 0-16
+	- colors: 0-16 -> DONE
 
 - Selections:
 	- get selection (primary, clipboard)
 	- set selection (primary, clipboard)
+
+EXTRA:
+- reload configuration file on receive SIGUSER1
