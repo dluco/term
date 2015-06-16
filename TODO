@@ -1,8 +1,10 @@
+TODO:
+
 - use XFontSets?
 
 - colors:
-	- color array
-	- load all colors in array
+	- color array -> DONE
+	- load all colors in array -> DONE
 	- 16-231: + 0x28
 	- 232-255: + 0xA0A0A
 
@@ -13,8 +15,17 @@
 	- colors: 0-16 -> DONE
 
 - Selections:
-	- get selection (primary, clipboard)
+	- get selection:
+		- primary -> chunk size?
+		- clipboard
 	- set selection (primary, clipboard)
 
+- X error handlers:
+	- see xsel
+
+- use XInternAtoms where possible
+- create list of supported atoms for selrequest TARGETS?
+
 EXTRA:
+
 - reload configuration file on receive SIGUSER1
