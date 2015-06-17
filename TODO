@@ -18,14 +18,19 @@ TODO:
 	- get selection:
 		- primary -> chunk size?
 		- clipboard
-	- set selection (primary, clipboard)
+	- set selection:
+		- primary
+		- clipboard -> DONE
 
 - X error handlers:
 	- see xsel
 
-- use XInternAtoms where possible
+- Atoms:
+	- do we need to re-get CLIPBOARD every time it's needed?
+	- use XInternAtoms where possible
+
 - create list of supported atoms for selrequest TARGETS?
 
-EXTRA:
+EXTRAS:
 
 - reload configuration file on receive SIGUSER1

@@ -94,8 +94,13 @@ typedef struct {
 } Selection;
 
 typedef struct {
+	void (*func)(XKeyEvent *xkey);
+} Shortcut;
+
+typedef struct {
 	Atom wmdeletewin;
 	Atom xembed;
+	Atom clipboard;
 	Atom targets;
 	Atom delete;
 	Atom text;
@@ -158,6 +163,7 @@ static void term_init(int cols, int rows);
 
 static void sel_init(void);
 static void sel_convert(Atom selection, Time time);
+static Bool sel_own(Atom selection, Time time);
 
 static void set_title(char *title);
 static void set_urgency(int urgent);
@@ -184,6 +190,9 @@ static void event_unmap(XEvent *event);
 static void event_visibility(XEvent *event);
 static void event_selnotify(XEvent *event);
 static void event_selrequest(XEvent *event);
+static void event_selclear(XEvent *event);
+
+static void sc_copy_clip(XKeyEvent *xkey);
 
 static int geomask_to_gravity(int mask);
 
@@ -200,6 +209,12 @@ static void (*event_handler[LASTEvent])(XEvent *) = {
 	[VisibilityNotify] = event_visibility,
 	[SelectionNotify] = event_selnotify,
 	[SelectionRequest] = event_selrequest,
+	[SelectionClear] = event_selclear,
+};
+
+/* Shortcuts */
+static Shortcut shortcuts[] = {
+	{sc_copy_clip},
 };
 
 /* Globals */
@@ -236,7 +251,7 @@ static ssize_t swrite(int fd, const void *buf, size_t count)
 }
 
 /*
- * Print an rror message and exit.
+ * Print an error message and exit.
  */
 static void die(char *fmt, ...)
 {
@@ -254,7 +269,7 @@ static void die(char *fmt, ...)
  */
 static void tty_read(void)
 {
-	char buf[256];
+	char buf[BUFSIZ];
 	int len;
 
 	if ((len = read(tty.fd, buf, sizeof(buf))) < 0)
@@ -309,11 +324,20 @@ static void event_keypress(XEvent *event)
 	XKeyEvent *key_event = &event->xkey;
 	KeySym keysym;
 	char buf[32];
+	Shortcut *sc;
 	int len;
 
 	len = XLookupString(key_event, buf, sizeof(buf), &keysym, NULL);
 	if (len == 0)
 		return;
+
+	/* Shortcuts */
+	for (sc = shortcuts; sc < shortcuts+LEN(shortcuts); sc++) {
+		// TODO
+		if (False) {
+			sc->func(key_event);
+		}
+	}
 
 	DEBUG("key pressed: %s", buf);
 
@@ -459,6 +483,9 @@ static void event_selnotify(XEvent *event)
 	XDeleteProperty(xsev->display, xsev->requestor, xsev->property);
 }
 
+/*
+ * SelectionRequest event handler.
+ */
 static void event_selrequest(XEvent *event)
 {
 	XSelectionRequestEvent *xsrev;
@@ -507,6 +534,27 @@ static void event_selrequest(XEvent *event)
 	if (!XSendEvent(xsrev->display, xsrev->requestor,
 				False, (ulong)NULL, (XEvent *)&xsev))
 		DEBUG("Error sending SelectionNotify event");
+}
+
+/*
+ * SelectionClear event handler.
+ */
+static void event_selclear(XEvent *event)
+{
+	/*
+	 * TODO: clear internal & visual selection.
+	 */
+}
+
+static void sc_copy_clip(XKeyEvent *xkey)
+{
+	if (sel.clipboard != NULL) {
+		free(sel.clipboard);
+	}
+	if (sel.primary != NULL) {
+		sel.clipboard = strdup(sel.primary);
+		sel_own(atoms.clipboard, xkey->time); // FIXME
+	}
 }
 
 /*
@@ -610,20 +658,15 @@ static void sel_convert(Atom selection, Time time)
 			sel.target, xw.win, time);
 }
 
-static Bool sel_own(Atom selection)
+static Bool sel_own(Atom selection, Time time)
 {
-	XSetSelectionOwner(xw.display, selection, xw.win, CurrentTime); // FIXME
+	XSetSelectionOwner(xw.display, selection, xw.win, time);
 
 	if (XGetSelectionOwner(xw.display, selection) != xw.win) 
 		return False;
 
-	XSetErrorHandler(x_error_handler);
+	XSetErrorHandler(x_error_handler); // FIXME: is this necessary?
 	return True;
-}
-
-static void sel_clear(Atom selection)
-{
-
 }
 
 /*
@@ -939,6 +982,7 @@ static void x_init(void)
 	atoms.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
 	netwmpid = XInternAtom(xw.display, "_NET_WM_PID", False);
 	atoms.xembed = XInternAtom(xw.display, "_XEMBED", False);
+	atoms.clipboard = XInternAtom(xw.display, "CLIPBOARD", False);
 	atoms.targets = XInternAtom(xw.display, "TARGETS", False);
 	atoms.text = XInternAtom(xw.display, "TEXT", False);
 	atoms.delete = XInternAtom(xw.display, "DELETE", False);
@@ -1045,7 +1089,8 @@ void main_loop(void)
 	int width = xw.width;
 	int height = xw.height;
 	fd_set read_fds;
-	struct timespec *tv = NULL; // Block indefinitely
+	//struct timespec *tv = NULL; // Block indefinitely
+	struct timespec tv; // FIXME
 
 	/* Wait for window to be mapped */
 	while (1) {
@@ -1081,8 +1126,11 @@ void main_loop(void)
 		FD_ZERO(&read_fds);
 		FD_SET(tty.fd, &read_fds);
 
+		tv.tv_sec = 1;
+		tv.tv_nsec = 0;
+
 		/* Check if fd(s) are ready to be read */
-		if (pselect(tty.fd+1, &read_fds, NULL, NULL, tv, NULL) < 0) {
+		if (pselect(tty.fd+1, &read_fds, NULL, NULL, &tv, NULL) < 0) {
 			if (errno == EINTR)
 				continue; // Interrupted
 			die("pselect failed: %s\n", strerror(errno));
@@ -1090,10 +1138,10 @@ void main_loop(void)
 
 		if (FD_ISSET(tty.fd, &read_fds)) {
 			/* Read from tty device */
-			//tty_read();
+			tty_read();
 		}
 
-		XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
+		//XDrawLine(xw.display, xw.win, dc.gc, 0, 0, 20, 20);
 
 		/* Process all pending events */
 		while (XPending(xw.display)) {
@@ -1105,8 +1153,6 @@ void main_loop(void)
 			if (event_handler[event.type])
 				(event_handler[event.type])(&event);
 		}
-
-		sleep(1);
 	}
 }
 
