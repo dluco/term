@@ -29,6 +29,9 @@ TODO:
 	- do we need to re-get CLIPBOARD every time it's needed?
 	- use XInternAtoms where possible
 
+- Cmd-line options & arguments:
+	- use more versatile method to get options and args
+
 - create list of supported atoms for selrequest TARGETS?
 
 EXTRAS:

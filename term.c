@@ -145,6 +145,7 @@ typedef struct {
 
 /* Function prototypes */
 static ssize_t swrite(int fd, const void *buf, size_t count);
+static size_t sstrlen(const char *s);
 static void die(char *fmt, ...);
 
 static void tty_read(void);
@@ -248,6 +249,14 @@ static ssize_t swrite(int fd, const void *buf, size_t count)
 		buf += r;
 	}
 	return aux;
+}
+
+static size_t sstrlen(const char *s)
+{
+	if (s == NULL)
+		return 0;
+
+	return strlen(s);
 }
 
 /*
@@ -523,7 +532,7 @@ static void event_selrequest(XEvent *event)
 			XChangeProperty(xsrev->display, xsrev->requestor,
 					xsrev->property, xsrev->target, 8,
 					PropModeReplace, (uchar *)sel_text,
-					strlen(sel_text));
+					sstrlen(sel_text));
 			xsev.property = xsrev->property;
 		}
 	} else {
@@ -542,7 +551,7 @@ static void event_selrequest(XEvent *event)
 static void event_selclear(XEvent *event)
 {
 	/*
-	 * TODO: clear internal & visual selection.
+	 * TODO: clear logical & visual selection.
 	 */
 }
 
@@ -797,7 +806,6 @@ static void load_colors(void)
 					&dc.colors[i], &dc.colors[i]))
 			die("Failed to allocate color '%s'\n", name);
 	}
-
 	/* Load xterm colors [16-231] */
 	for (i = 16; i < 232; i++) {
 		// TODO
@@ -810,10 +818,8 @@ static void load_colors(void)
 
 	/* Load xterm (grayscale) colors [232-255] */
 	for (i = 232; i < 256; i++) {
-		// TODO
-		dc.colors[i].red = 0;
-		dc.colors[i].green = 0;
-		dc.colors[i].blue = 0;
+		dc.colors[i].red = 0x0808 + 0x0a0a*(i - 232);
+		dc.colors[i].blue = dc.colors[i].green = dc.colors[i].red;
 		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
 			die("Failed to allocate color %d\n", i);
 	}
@@ -955,7 +961,7 @@ static void x_init(void)
 	xw.attrs.colormap = xw.colormap;
 	xw.attrs.bit_gravity = NorthWestGravity;
 	xw.attrs.event_mask = ExposureMask | KeyPressMask | ButtonReleaseMask |
-		StructureNotifyMask | VisibilityChangeMask | FocusChangeMask; // TODO
+		StructureNotifyMask | VisibilityChangeMask | FocusChangeMask;
 
 	xw.parent = DEFAULT(xw.parent, XRootWindow(xw.display, xw.screen));
 
@@ -1107,6 +1113,7 @@ void main_loop(void)
 		}
 
 	}
+	resize_all(width, height);
 
 	/* Set up tty and exec command */
 	tty_init();
