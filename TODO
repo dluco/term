@@ -34,6 +34,8 @@ TODO:
 
 - create list of supported atoms for selrequest TARGETS?
 
+- replace die() with errx(EXIT_FAILURE)
+
 EXTRAS:
 
 - reload configuration file on receive SIGUSER1

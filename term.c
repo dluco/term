@@ -5,6 +5,7 @@
 #include <locale.h>
 #include <errno.h>
 #include <unistd.h>
+#include <err.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
@@ -1246,16 +1247,22 @@ static void tty_init(void)
 	}
 }
 
+static void usage()
+{
+	printf("term: usage goes here\n");
+	exit(EXIT_SUCCESS);
+}
+
 int main(int argc, char *argv[])
 {
 	uint cols = DEFAULT_COLS, rows = DEFAULT_ROWS;
-	char *p;
-	int i;
+	char **arg, *p;
 	xw.display_name = NULL;
 	xw.parent = None;
 	dc.font.name = NULL;
 
 	/* FIXME: Parse options and arguments */
+	/*
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "-f", 3) == 0 && (i+1) < argc)
 			dc.font.name = argv[++i];
@@ -1270,12 +1277,38 @@ int main(int argc, char *argv[])
 		else if (strncmp(argv[i], "-c", 3) == 0 && (i+1) < argc)
 			res_class = argv[++i];
 	}
+	*/
+
+#define OPT(s)  (strcmp(*arg, (s)) == 0)
+#define OPTARG(s) (OPT(s) && (*(arg+1) ? (arg++, 1) :\
+			(warnx("option '%s' requires an argument", s), 0))) // FIXME: make error fatal?
+
+	for (arg = argv+1; *arg; arg++) {
+		if (OPT("-h"))
+			usage();
+		if (OPTARG("-f"))
+			dc.font.name = *arg;
+		else if (OPTARG("-d"))
+			xw.display_name = *arg;
+		else if (OPTARG("-g"))
+			xw.geomask = XParseGeometry(*arg, &xw.x, &xw.y, &cols, &rows);
+		else if (OPTARG("-w"))
+			xw.parent = strtol(*arg, NULL, 0);
+		else if (OPTARG("-n"))
+			res_name = *arg;
+		else if (OPTARG("-c"))
+			res_class = *argv;
+		else {
+			errx(EXIT_FAILURE, "unknown option %s", *arg);
+		}
+	}
 
 	if (!res_name) {
 		res_name = (p = strrchr(argv[0], '/')) ? (p+1) : RES_NAME;
 	}
 	DEBUG("resource name = %s", res_name);
 	DEBUG("resource class = %s", res_class);
+	exit(0);
 
 	DEBUG("display name = %s", XDisplayName(xw.display_name));
 	DEBUG("cols = %d", cols);
