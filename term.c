@@ -5,7 +5,6 @@
 #include <locale.h>
 #include <errno.h>
 #include <unistd.h>
-#include <err.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
@@ -16,10 +15,22 @@
 #include <X11/Xresource.h>
 #include <pty.h>
 
+static char *argv0;
+
+#define VERSION "0.0.0"
+#define DEBUG_LEVEL 0
+
+#define D_FATAL	0
+#define D_WARN	1
+
 /* Macros */
 #define DEBUG(msg, ...) \
 	fprintf(stderr, "DEBUG %s:%s:%d: " msg "\n", \
 			__FILE__, __func__, __LINE__, ##__VA_ARGS__)
+
+#define debug(level, fmt, ...) \
+	{if ((level) <= DEBUG_LEVEL) warn(fmt, ##__VA_ARGS__);}
+
 #define MIN(a, b)		((a) < (b)) ? (a) : (b)
 #define MAX(a, b)		((a) > (b)) ? (a) : (b)
 #define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
@@ -147,7 +158,6 @@ typedef struct {
 /* Function prototypes */
 static ssize_t swrite(int fd, const void *buf, size_t count);
 static size_t sstrlen(const char *s);
-static void die(char *fmt, ...);
 
 static void tty_read(void);
 static void tty_write(const char *s, size_t len);
@@ -260,18 +270,31 @@ static size_t sstrlen(const char *s)
 	return strlen(s);
 }
 
-/*
- * Print an error message and exit.
- */
-static void die(char *fmt, ...)
+static void die(const char *fmt, ...)
 {
 	va_list ap;
+
+	fprintf(stderr, "%s: ", argv0);
 
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
-
+	
+	fprintf(stderr, "\n");
 	exit(EXIT_FAILURE);
+}
+
+static void warn(const char *fmt, ...)
+{
+	va_list ap;
+
+	fprintf(stderr, "%s: ", argv0);
+
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	
+	fprintf(stderr, "\n");
 }
 
 /*
@@ -283,7 +306,7 @@ static void tty_read(void)
 	int len;
 
 	if ((len = read(tty.fd, buf, sizeof(buf))) < 0)
-		die("Failed to read from shell: %s\n", strerror(errno));
+		die("Failed to read from shell: %s", strerror(errno));
 
 	// FIXME
 	DEBUG("%s", buf);
@@ -297,7 +320,7 @@ static void tty_read(void)
 static void tty_write(const char *s, size_t len)
 {
 	if (swrite(tty.fd, s, len) == -1)
-		die("write error on tty: %s\n", strerror(errno));
+		die("write error on tty: %s", strerror(errno));
 }
 
 /*
@@ -526,7 +549,7 @@ static void event_selrequest(XEvent *event)
 		if (xsrev->selection == XA_PRIMARY) {
 			sel_text = sel.primary;
 		} else {
-			DEBUG("Unhandled selection: 0x%lx", xsrev->selection);
+			debug(D_WARN, "Unhandled selection: 0x%lx", xsrev->selection);
 			return;
 		}
 		if (sel_text) {
@@ -543,7 +566,7 @@ static void event_selrequest(XEvent *event)
 
 	if (!XSendEvent(xsrev->display, xsrev->requestor,
 				False, (ulong)NULL, (XEvent *)&xsev))
-		DEBUG("Error sending SelectionNotify event");
+		debug(D_WARN, "Error sending SelectionNotify event");
 }
 
 /*
@@ -711,17 +734,17 @@ static void set_hints(void)
 
 	/* Size hints */
 	if (!(size_hints = XAllocSizeHints())) {
-		die("Failed to allocate window size hints\n");
+		die("Failed to allocate window size hints");
 	}
 
 	/* WM hints */
 	if (!(wm_hints = XAllocWMHints())) {
-		die("Failed to allocate window wm hints\n");
+		die("Failed to allocate window wm hints");
 	}
 
 	/* Class hints */
 	if (!(class_hints = XAllocClassHint())) {
-		die("Failed to allocate window class hints\n");
+		die("Failed to allocate window class hints");
 	}
 
 	size_hints->flags = PSize | PBaseSize | PResizeInc;
@@ -743,8 +766,8 @@ static void set_hints(void)
 	wm_hints->flags = InputHint;
 	wm_hints->input = True;
 
-	class_hints->res_name = "term";
-	class_hints->res_class = "Term";
+	class_hints->res_name = res_name;
+	class_hints->res_class = res_class;
 
 	XSetWMNormalHints(xw.display, xw.win, size_hints);
 	XSetWMHints(xw.display, xw.win, wm_hints);
@@ -762,7 +785,7 @@ static void load_font(XFont *font, char *font_name)
 {
 	/* Try to load and retrieve font structuce */
 	if (!(font->font_info = XLoadQueryFont(xw.display, font_name))) {
-		die("Failed to load font '%s'\n", font_name);
+		die("Failed to load font '%s'", font_name);
 	}
 	/* Get (max) font dimensions */
 	font->width = font_max_width(font->font_info);
@@ -805,7 +828,7 @@ static void load_colors(void)
 
 		if (!XAllocNamedColor(xw.display, xw.colormap, name,
 					&dc.colors[i], &dc.colors[i]))
-			die("Failed to allocate color '%s'\n", name);
+			die("Failed to allocate color '%s'", name);
 	}
 	/* Load xterm colors [16-231] */
 	for (i = 16; i < 232; i++) {
@@ -814,7 +837,7 @@ static void load_colors(void)
 		dc.colors[i].green = 0;
 		dc.colors[i].blue = 0;
 		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
-			die("Failed to allocate color %d\n", i);
+			die("Failed to allocate color %d", i);
 	}
 
 	/* Load xterm (grayscale) colors [232-255] */
@@ -822,7 +845,7 @@ static void load_colors(void)
 		dc.colors[i].red = 0x0808 + 0x0a0a*(i - 232);
 		dc.colors[i].blue = dc.colors[i].green = dc.colors[i].red;
 		if (!XAllocColor(xw.display, xw.colormap, &dc.colors[i]))
-			die("Failed to allocate color %d\n", i);
+			die("Failed to allocate color %d", i);
 	}
 }
 
@@ -914,7 +937,7 @@ static void x_init(void)
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
-		die("Cannot open X display\n");
+		die("Cannot open X display");
 
 	/* Get default screen and visual */
 	xw.screen = XDefaultScreen(xw.display);
@@ -1055,9 +1078,7 @@ static void extract_resources(void)
 		sprintf(color_name, "color%d", i);
 		sprintf(color_class, "Color%d", i);
 
-		DEBUG("%s, %s", color_name, color_class);
 		if ((s = get_resource(color_name, color_class)) != NULL) {
-			DEBUG("%s: %s", color_name, s);
 			xres.colors[i] = strdup(s);
 		}
 	}
@@ -1141,7 +1162,7 @@ void main_loop(void)
 		if (pselect(tty.fd+1, &read_fds, NULL, NULL, &tv, NULL) < 0) {
 			if (errno == EINTR)
 				continue; // Interrupted
-			die("pselect failed: %s\n", strerror(errno));
+			die("pselect failed: %s", strerror(errno));
 		}
 
 		if (FD_ISSET(tty.fd, &read_fds)) {
@@ -1173,7 +1194,7 @@ static void exec_cmd(void)
 	char *prog, **args;
 
 	if (!(prog = getenv("SHELL")))
-		die("Failed to get shell name\n");
+		die("Failed to get shell name");
 
 	args = (char *[]) {prog, NULL};
 
@@ -1196,11 +1217,11 @@ void sigchld(int signal)
 	int status, ret;
 
 	if (waitpid(tty.pid, &status, 0) < 0)
-		die("Waiting for pid %hd failed: %s\n", tty.pid, strerror(errno));
+		die("Waiting for pid %hd failed: %s", tty.pid, strerror(errno));
 
 	ret = WIFEXITED(status) ? WEXITSTATUS(status) : EXIT_FAILURE;
 	if (ret != EXIT_SUCCESS)
-		die("child exited with error '%d'\n", status);
+		die("child exited with error '%d'", status);
 
 	exit(EXIT_SUCCESS);
 }
@@ -1215,11 +1236,11 @@ static void tty_init(void)
 
 	/* Open an available pseudoterminal */
 	if (openpty(&master, &slave, NULL, NULL, &winp) < 0)
-		die("failed to open pty: %s\n", strerror(errno));
+		die("failed to open pty: %s", strerror(errno));
 
 	switch (tty.pid = fork()) {
 	case -1:
-		die("fork failed\n");
+		die("fork failed");
 		break;
 	case 0:		/* CHILD */
 		/* Create a new process group */
@@ -1230,7 +1251,7 @@ static void tty_init(void)
 		dup2(slave, STDERR_FILENO);
 		/* Become the controlling terminal */
 		if (ioctl(slave, TIOCSCTTY, NULL) < 0)
-			die("ioctl TIOCSTTY failed: %s\n", strerror(errno));
+			die("ioctl TIOCSTTY failed: %s", strerror(errno));
 		/* Close master and slave */
 		close(slave);
 		close(master);
@@ -1247,9 +1268,10 @@ static void tty_init(void)
 	}
 }
 
+/* TODO */
 static void usage()
 {
-	printf("term: usage goes here\n");
+	printf("Usage:\n  %s: usage goes here\n\n", argv0);
 	exit(EXIT_SUCCESS);
 }
 
@@ -1261,32 +1283,23 @@ int main(int argc, char *argv[])
 	xw.parent = None;
 	dc.font.name = NULL;
 
-	/* FIXME: Parse options and arguments */
-	/*
-	for (i = 1; i < argc; i++) {
-		if (strncmp(argv[i], "-f", 3) == 0 && (i+1) < argc)
-			dc.font.name = argv[++i];
-		else if (strncmp(argv[i], "-d", 3) == 0 && (i+1) < argc)
-			xw.display_name = argv[++i];
-		else if (strncmp(argv[i], "-g", 3) == 0 && (i+1) < argc)
-			xw.geomask = XParseGeometry(argv[++i], &xw.x, &xw.y, &cols, &rows);
-		else if (strncmp(argv[i], "-w", 3) == 0 && (i+1) < argc)
-			xw.parent = strtol(argv[++i], NULL, 0);
-		else if (strncmp(argv[i], "-n", 3) == 0 && (i+1) < argc)
-			res_name = argv[++i];
-		else if (strncmp(argv[i], "-c", 3) == 0 && (i+1) < argc)
-			res_class = argv[++i];
-	}
-	*/
+	argv0 = *argv;
 
 #define OPT(s)  (strcmp(*arg, (s)) == 0)
-#define OPTARG(s) (OPT(s) && (*(arg+1) ? (arg++, 1) :\
-			(warnx("option '%s' requires an argument", s), 0))) // FIXME: make error fatal?
+#define OPTARG(s) (OPT((s)) && (*(arg+1) ? (arg++, 1) :\
+			(die("option '%s' requires an argument", (s)), 0)))
 
+	/* Parse options and arguments */
 	for (arg = argv+1; *arg; arg++) {
+		if (*arg[0] != '-') // Not an option
+			continue;
+
 		if (OPT("-h"))
 			usage();
-		if (OPTARG("-f"))
+		else if (OPT("-v")) {
+			printf("%s %s\n", argv0, VERSION);
+			exit(EXIT_SUCCESS);
+		} else if (OPTARG("-f"))
 			dc.font.name = *arg;
 		else if (OPTARG("-d"))
 			xw.display_name = *arg;
@@ -1299,20 +1312,12 @@ int main(int argc, char *argv[])
 		else if (OPTARG("-c"))
 			res_class = *argv;
 		else {
-			errx(EXIT_FAILURE, "unknown option %s", *arg);
+			die("unknown option %s", *arg);
 		}
 	}
-
 	if (!res_name) {
 		res_name = (p = strrchr(argv[0], '/')) ? (p+1) : RES_NAME;
 	}
-	DEBUG("resource name = %s", res_name);
-	DEBUG("resource class = %s", res_class);
-	exit(0);
-
-	DEBUG("display name = %s", XDisplayName(xw.display_name));
-	DEBUG("cols = %d", cols);
-	DEBUG("rows = %d", rows);
 
 	/* Set up locale */
 	setlocale(LC_CTYPE, "");
