@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <locale.h>
+#include <limits.h>
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
@@ -12,6 +13,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
+#include <X11/keysym.h>
 #include <X11/Xresource.h>
 #include <pty.h>
 
@@ -22,6 +24,8 @@ static char *argv0;
 
 #define D_FATAL	0
 #define D_WARN	1
+
+#define XK_ANY_MOD	UINT_MAX
 
 /* Macros */
 #define DEBUG(msg, ...) \
@@ -106,6 +110,8 @@ typedef struct {
 } Selection;
 
 typedef struct {
+	uint mod;
+	KeySym keysym;
 	void (*func)(XKeyEvent *xkey);
 } Shortcut;
 
@@ -204,6 +210,8 @@ static void event_selnotify(XEvent *event);
 static void event_selrequest(XEvent *event);
 static void event_selclear(XEvent *event);
 
+static void sc_paste_sel(XKeyEvent *xkey);
+static void sc_paste_clip(XKeyEvent *xkey);
 static void sc_copy_clip(XKeyEvent *xkey);
 
 static int geomask_to_gravity(int mask);
@@ -224,10 +232,7 @@ static void (*event_handler[LASTEvent])(XEvent *) = {
 	[SelectionClear] = event_selclear,
 };
 
-/* Shortcuts */
-static Shortcut shortcuts[] = {
-	{sc_copy_clip},
-};
+#include "config.h"
 
 /* Globals */
 static TTY tty;
@@ -240,6 +245,7 @@ static XResources xres;
 static XrmDatabase rDB;
 static char *res_name = NULL;
 static char *res_class = RES_CLASS;
+static char **cmd = NULL;
 
 
 /*
@@ -297,6 +303,11 @@ static void warn(const char *fmt, ...)
 	fprintf(stderr, "\n");
 }
 
+static int check_mod(uint mod, uint state)
+{
+	return (mod == XK_ANY_MOD) || (mod == state);
+}
+
 /*
  * Read from the tty.
  */
@@ -335,7 +346,7 @@ static void tty_resize(int cols, int rows)
 	tty.ws.ws_ypixel = rows * xw.ch;
 
 	if (ioctl(tty.fd, TIOCSWINSZ, &tty.ws) < 0)
-		fprintf(stderr, "Unable to set window size: %s\n",
+		debug(D_WARN, "Unable to set window size: %s",
 				strerror(errno));
 }
 
@@ -361,16 +372,17 @@ static void event_keypress(XEvent *event)
 	int len;
 
 	len = XLookupString(key_event, buf, sizeof(buf), &keysym, NULL);
-	if (len == 0)
-		return;
 
 	/* Shortcuts */
 	for (sc = shortcuts; sc < shortcuts+LEN(shortcuts); sc++) {
-		// TODO
-		if (False) {
+		if (keysym == sc->keysym && check_mod(sc->mod, key_event->state)) {
 			sc->func(key_event);
+			return;
 		}
 	}
+
+	if (len == 0)
+		return;
 
 	DEBUG("key pressed: %s", buf);
 
@@ -428,7 +440,6 @@ static void event_expose(XEvent *event)
 	XExposeEvent *xexpose = &event->xexpose;
 
 	if (xw.state & WIN_REDRAW) {
-		DEBUG("HERE"); // FIXME
 		if (xexpose->count == 0)
 			xw.state &= ~WIN_REDRAW;
 	}
@@ -579,6 +590,16 @@ static void event_selclear(XEvent *event)
 	 */
 }
 
+static void sc_paste_sel(XKeyEvent *xkey)
+{
+	sel_convert(XA_PRIMARY, xkey->time);
+}
+
+static void sc_paste_clip(XKeyEvent *xkey)
+{
+	sel_convert(atoms.clipboard, xkey->time);
+}
+
 static void sc_copy_clip(XKeyEvent *xkey)
 {
 	if (sel.clipboard != NULL) {
@@ -586,7 +607,7 @@ static void sc_copy_clip(XKeyEvent *xkey)
 	}
 	if (sel.primary != NULL) {
 		sel.clipboard = strdup(sel.primary);
-		sel_own(atoms.clipboard, xkey->time); // FIXME
+		sel_own(atoms.clipboard, xkey->time);
 	}
 }
 
@@ -1193,10 +1214,12 @@ static void exec_cmd(void)
 {
 	char *prog, **args;
 
-	if (!(prog = getenv("SHELL")))
-		die("Failed to get shell name");
+	if (cmd)
+		prog = *cmd;
+	else if (!(prog = getenv("SHELL")))
+		prog = shell;
 
-	args = (char *[]) {prog, NULL};
+	args = (cmd) ? cmd : (char *[]) {prog, NULL};
 
 	/* Default signal handlers */
 	signal(SIGALRM, SIG_DFL);
@@ -1293,6 +1316,8 @@ int main(int argc, char *argv[])
 	for (arg = argv+1; *arg; arg++) {
 		if (*arg[0] != '-') // Not an option
 			continue;
+		else if (OPT("--")) // End of options
+			break;
 
 		if (OPT("-h"))
 			usage();
@@ -1311,7 +1336,10 @@ int main(int argc, char *argv[])
 			res_name = *arg;
 		else if (OPTARG("-c"))
 			res_class = *argv;
-		else {
+		else if (OPTARG("-e")) {
+			cmd = arg; // All remaining args are part of command
+			break;
+		} else {
 			die("unknown option %s", *arg);
 		}
 	}

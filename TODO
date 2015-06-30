@@ -6,7 +6,7 @@ TODO:
 	- color array -> DONE
 	- load all colors in array -> DONE
 	- 16-231: + 0x28
-	- 232-255: + 0xA0A0A
+	- 232-255: + 0xA0A0A -> DONE
 
 - Xresources:
 	- font -> DONE
@@ -26,11 +26,9 @@ TODO:
 	- see xsel
 
 - Atoms:
+	- use XInternAtoms where possible?
 	- do we need to re-get CLIPBOARD every time it's needed?
-	- use XInternAtoms where possible
-
-- Cmd-line options & arguments:
-	- use more versatile method to get options and args
+		- don't think so: Xmu has _XA_CLIPBOARD, which does not change
 
 - create list of supported atoms for selrequest TARGETS?
 
