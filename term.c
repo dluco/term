@@ -37,7 +37,7 @@ static char *argv0;
 
 #define MIN(a, b)		((a) < (b)) ? (a) : (b)
 #define MAX(a, b)		((a) > (b)) ? (a) : (b)
-#define LIMIT(x, a, b)	(x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x)
+#define LIMIT(x, a, b)	((x) = ((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x))
 #define DEFAULT(a, b)	((a) ? (a) : (b))
 #define LEN(a)			(sizeof(a) / sizeof(a)[0])
 #define MODBIT(x, set, bit) ((set) ? ((x) |= (bit)) : ((x) &= ~(bit)))
@@ -71,13 +71,21 @@ typedef struct {
 	struct winsize ws;	/* window size struct (for openpty and ioctl) */
 } TTY;
 
+typedef struct {
+	int x;
+	int y;
+} Coord;
+
 /* Internal representation of screen */
 typedef struct {
 	int rows;		/* number of rows */
 	int cols;		/* number of columns */
+	Coord cursor;	/* position of cursor */
+	char **line;	/* lines */
 	Bool *dirty;	/* dirtyness of lines */
 } Term;
 
+/* Visual representation of screen */
 typedef struct {
 	Display *display;			/* X display */
 	Window win;					/* X window */
@@ -174,9 +182,12 @@ static void draw(void);
 static void draw_region(int col1, int row1, int col2, int row2);
 static void redraw(void);
 
+static void term_putc(char c);
 static void term_resize(int cols, int rows);
+static void term_clear(int x1, int y1, int x2, int y2);
 static void term_setdirty(int top, int bottom);
 static void term_fulldirty(void);
+static void term_reset(void);
 static void term_init(int cols, int rows);
 
 static void sel_init(void);
@@ -187,8 +198,8 @@ static void set_title(char *title);
 static void set_urgency(int urgent);
 static void load_font(XFont *font, char *font_name);
 static int font_max_width(XFontStruct *font_info);
-static void term_clear(int col1, int row1, int col2, int row2);
-static void xwindow_clear(int x1, int y1, int x2, int y2);
+static void xwindow_clear(int col1, int row1, int col2, int row2);
+static void xwindow_abs_clear(int x1, int y1, int x2, int y2);
 static void xwindow_resize(int cols, int rows);
 static void x_init(void);
 static void main_loop(void);
@@ -313,7 +324,7 @@ static int check_mod(uint mod, uint state)
  */
 static void tty_read(void)
 {
-	char buf[BUFSIZ];
+	char buf[BUFSIZ], *p;
 	int len;
 
 	if ((len = read(tty.fd, buf, sizeof(buf))) < 0)
@@ -323,6 +334,10 @@ static void tty_read(void)
 	DEBUG("%s", buf);
 	//XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
 	//XFlush(xw.display);
+	//
+	for (p = buf; *p; p++) {
+		term_putc(*p);
+	}
 }
 
 /*
@@ -642,7 +657,7 @@ static void draw_region(int col1, int row1, int col2, int row2)
 			continue;
 
 		/* Clear current row in buffer and reset dirtyness */
-		term_clear(0, row, term.cols, row);
+		xwindow_clear(0, row, term.cols, row);
 		term.dirty[row] = False;
 
 		/* ... */
@@ -659,16 +674,77 @@ static void redraw(void)
 }
 
 /*
+ * TODO
+ */
+static void term_putc(char c)
+{
+	
+	return;
+}
+
+/*
  * Resize terminal (internal).
  */
 static void term_resize(int cols, int rows)
 {
+	int i;
+	int mincols = MIN(term.cols, cols);
+	int minrows = MIN(term.rows, rows);
+
+	for (i = 0; i <= term.cursor.y - rows; i++) {
+		free(term.line[i]);
+	}
+	if (i > 0) {
+		memmove(term.line, term.line + i, rows * sizeof(*term.line));
+	}
+	for (i += rows; i < term.rows; i++) {
+		free(term.line[i]);
+	}
+
 	/* Reallocate height dependent elements */
+	term.line = realloc(term.line, rows * sizeof(*term.line));
 	term.dirty = realloc(term.dirty, rows * sizeof(*term.dirty));
+
+	/* Resize rows */
+	for (i = 0; i < minrows; i++) {
+		term.line[i] = realloc(term.line[i], cols * sizeof(*term.line[i]));
+	}
+	/* Allocate new rows (if any) */
+	for (; i < rows; i++) {
+		term.line[i] = malloc(cols * sizeof(*term.line[i]));
+	}
 
 	/* Update terminal size */
 	term.cols = cols;
 	term.rows = rows;
+
+	/* Clear new cols */
+	if (cols > mincols && rows > 0)
+		term_clear(mincols, 0, cols - 1, minrows - 1);
+	/* Clear new rows (and new cols/rows overlap) */
+	if (rows > minrows && cols > 0)
+		term_clear(0, minrows, cols - 1, rows - 1);
+}
+
+/*
+ * Clear a region of the internal terminal.
+ */
+static void term_clear(int x1, int y1, int x2, int y2)
+{
+	int x, y;
+
+	/* Contrain coords */
+	LIMIT(x1, 0, term.cols-1);
+	LIMIT(y1, 0, term.rows-1);
+	LIMIT(x2, 0, term.cols-1);
+	LIMIT(y2, 0, term.rows-1);
+
+	for (y = y1; y <= y2; y++) {
+		term.dirty[y] = True;
+		for (x = x1; x <= x2; x++) {
+			term.line[y][x] = ' ';
+		}
+	}
 }
 
 /*
@@ -873,7 +949,7 @@ static void load_colors(void)
 /*
  * Clear region of the window (column,row coordinates).
  */
-static void term_clear(int col1, int row1, int col2, int row2)
+static void xwindow_clear(int col1, int row1, int col2, int row2)
 {
 	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc,
@@ -886,7 +962,7 @@ static void term_clear(int col1, int row1, int col2, int row2)
 /*
  * Clear region of the window (absolute x,y coordinates).
  */
-static void xwindow_clear(int x1, int y1, int x2, int y2)
+static void xwindow_abs_clear(int x1, int y1, int x2, int y2)
 {
 	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, x1, y1, x2-x1, y2-y1);
@@ -902,7 +978,7 @@ static void xwindow_resize(int cols, int rows)
 	xw.drawbuf = XCreatePixmap(xw.display, xw.win, xw.width, xw.height,
 			DefaultDepth(xw.display, xw.screen));
 
-	xwindow_clear(0, 0, xw.width, xw.height);
+	xwindow_abs_clear(0, 0, xw.width, xw.height);
 }
 
 /*
@@ -1118,6 +1194,12 @@ static void extract_resources(void)
 	}
 }
 
+static void term_reset(void)
+{
+	term.cursor = (Coord){ .x = 0, .y = 0 };
+	term_clear(0, 0, term.cols-1, term.rows-1);
+}
+
 /*
  * Initialize Term.
  */
@@ -1126,6 +1208,7 @@ static void term_init(int cols, int rows)
 	/* Set initial size, and force allocation
 	 * of internal structures. */
 	term_resize(cols, rows);
+	term_reset();
 }
 
 /*
