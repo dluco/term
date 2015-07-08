@@ -114,6 +114,7 @@ typedef struct {
 
 typedef struct {
 	char *primary, *clipboard;
+	Time sel_time, clip_time;
 	Atom target;
 } Selection;
 
@@ -127,6 +128,7 @@ typedef struct {
 	Atom wmdeletewin;
 	Atom xembed;
 	Atom clipboard;
+	Atom timestamp;
 	Atom targets;
 	Atom delete;
 	Atom text;
@@ -153,8 +155,7 @@ static char *color_names[] = {
 	"white",
 };
 
-//int color_fg = 7;
-int color_fg = 1;
+int color_fg = 7;
 int color_bg = 0;
 
 /* Drawing context */
@@ -193,6 +194,7 @@ static void term_init(int cols, int rows);
 static void sel_init(void);
 static void sel_convert(Atom selection, Time time);
 static Bool sel_own(Atom selection, Time time);
+static void sel_copy(Time time);
 
 static void set_title(char *title);
 static void set_urgency(int urgent);
@@ -412,6 +414,8 @@ static void event_brelease(XEvent *event)
 {
 	if (event->xbutton.button == Button1) {
 		sel_convert(XA_PRIMARY, event->xbutton.time);
+	} else if (event->xbutton.button == Button2) {
+		sel_copy(event->xbutton.time);
 	}
 }
 
@@ -499,7 +503,7 @@ static void event_visibility(XEvent *event)
 		/* Unset visibility bit of state mask */
 		xw.state &= ~WIN_VISIBLE;
 	} else if (!(xw.state & WIN_VISIBLE)) {
-		/* XXX */
+		/* Window has become visible - flag for redraw */
 		xw.state |= WIN_VISIBLE | WIN_REDRAW;
 	}
 }
@@ -549,12 +553,13 @@ static void event_selrequest(XEvent *event)
 {
 	XSelectionRequestEvent *xsrev;
 	XSelectionEvent xsev;
+	Time timestamp;
 	char *sel_text;
 
 	xsrev = &event->xselectionrequest;
 
 	xsev.type = SelectionNotify;
-	xsev.display = xw.display;
+	xsev.display = xsrev->display;
 	xsev.requestor = xsrev->requestor;
 	xsev.selection = xsrev->selection;
 	xsev.target = xsrev->target;
@@ -566,31 +571,57 @@ static void event_selrequest(XEvent *event)
 	}
 
 	/*
-	 * TODO: handle TARGETS, MULTIPLE, TIMESTAMP requests
-	 * DELETE
+	 * TODO: handle MULTIPLE, DELETE requests
 	 */
-	if (xsrev->target == sel.target || xsrev->target == XA_STRING
+	if (xsrev->target == atoms.timestamp) {
+		/* TIMESTAMP request: return timestamp used to acquire selection */
+		if (xsrev->selection == XA_PRIMARY) {
+			timestamp = sel.sel_time;
+		} else if (xsrev->selection == atoms.clipboard) {
+			timestamp = sel.clip_time;
+		} else {
+			debug(D_WARN, "timestamp request: unhandled selection: 0x%lx",
+					xsrev->selection);
+			return;
+			/* FIXME: refuse conversion? */
+		}
+		xsev.property = xsrev->property;
+		XChangeProperty(xsev.display, xsev.requestor, xsev.property,
+				XA_INTEGER, 32, PropModeReplace,
+				(uchar *)timestamp, 1);
+	} else if (xsrev->target == atoms.targets) {
+		/* TARGETS request: return list of supported targets */
+		Atom supported[5] = { atoms.timestamp, atoms.targets, XA_STRING, atoms.text, atoms.utf8 };
+
+		xsev.property = xsrev->property;
+		XChangeProperty(xsev.display, xsev.requestor, xsev.property,
+				XA_ATOM, 32, PropModeReplace,
+				(uchar *)supported, LEN(supported));
+	} else if (xsrev->target == sel.target || xsrev->target == XA_STRING
 			|| xsrev->target == atoms.text) {
 		/* STRING, TEXT request */
 		if (xsrev->selection == XA_PRIMARY) {
 			sel_text = sel.primary;
+		} else if (xsrev->selection == atoms.clipboard) {
+			sel_text = sel.clipboard;
 		} else {
-			debug(D_WARN, "Unhandled selection: 0x%lx", xsrev->selection);
+			debug(D_WARN, "text request: unhandled selection: 0x%lx",
+					xsrev->selection);
 			return;
 		}
 		if (sel_text) {
-			XChangeProperty(xsrev->display, xsrev->requestor,
-					xsrev->property, xsrev->target, 8,
+			xsev.property = xsrev->property;
+			XChangeProperty(xsev.display, xsev.requestor,
+					xsev.property, xsev.target, 8,
 					PropModeReplace, (uchar *)sel_text,
 					sstrlen(sel_text));
-			xsev.property = xsrev->property;
 		}
 	} else {
 		/* Refuse conversion to requested target */
 		xsev.property = None;
 	}
 
-	if (!XSendEvent(xsrev->display, xsrev->requestor,
+	if (!XSendEvent(xsev.display, xsev.requestor,
 				False, (ulong)NULL, (XEvent *)&xsev))
 		debug(D_WARN, "Error sending SelectionNotify event");
 }
@@ -622,19 +653,20 @@ static void sc_copy_clip(XKeyEvent *xkey)
 	}
 	if (sel.primary != NULL) {
 		sel.clipboard = strdup(sel.primary);
-		sel_own(atoms.clipboard, xkey->time);
+		if (sel_own(atoms.clipboard, xkey->time))
+			sel.clip_time = xkey->time;
 	}
 }
 
 /*
  * Draw the buffer into the window.
- * TODO
  */
 static void draw(void)
 {
 	draw_region(0, 0, term.cols, term.rows);
 	XCopyArea(xw.display, xw.drawbuf, xw.win, dc.gc,
 			0, 0, xw.width, xw.height, 0, 0);
+	XSetForeground(xw.display, dc.gc, dc.colors[color_bg].pixel);
 }
 
 /*
@@ -799,6 +831,18 @@ static Bool sel_own(Atom selection, Time time)
 	return True;
 }
 
+static void sel_copy(Time time)
+{
+	/* TODO: get text selection for primary */
+	if (sel.primary)
+		free(sel.primary);
+
+	sel.primary = strdup("text");
+
+	if (sel_own(XA_PRIMARY, time))
+		sel.sel_time = time;
+}
+
 /*
  * Set the title of the window.
  */
@@ -951,7 +995,7 @@ static void load_colors(void)
  */
 static void xwindow_clear(int col1, int row1, int col2, int row2)
 {
-	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
+	XSetForeground(xw.display, dc.gc, dc.colors[color_bg].pixel);
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc,
 			xw.border + col1 * xw.cw,
 			xw.border + row1 * xw.ch,
@@ -964,7 +1008,7 @@ static void xwindow_clear(int col1, int row1, int col2, int row2)
  */
 static void xwindow_abs_clear(int x1, int y1, int x2, int y2)
 {
-	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel); // FIXME
+	XSetForeground(xw.display, dc.gc, dc.colors[color_bg].pixel);
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, x1, y1, x2-x1, y2-y1);
 }
 
@@ -1102,18 +1146,19 @@ static void x_init(void)
 	dc.gc = XCreateGC(xw.display, XRootWindow(xw.display, xw.screen),
 			GCGraphicsExposures, &gcvalues);
 	/* Fill buffer with background color */
-	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
+	XSetForeground(xw.display, dc.gc, dc.colors[color_bg].pixel);
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, 0, 0, xw.width, xw.height);
 
 	/* Get atom(s) */
 	atoms.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
 	netwmpid = XInternAtom(xw.display, "_NET_WM_PID", False);
 	atoms.xembed = XInternAtom(xw.display, "_XEMBED", False);
-	atoms.clipboard = XInternAtom(xw.display, "CLIPBOARD", False);
+	atoms.timestamp = XInternAtom(xw.display, "TIMESTAMP", False);
 	atoms.targets = XInternAtom(xw.display, "TARGETS", False);
 	atoms.text = XInternAtom(xw.display, "TEXT", False);
+	atoms.clipboard = XInternAtom(xw.display, "CLIPBOARD", False);
 	atoms.delete = XInternAtom(xw.display, "DELETE", False);
-	atoms.utf8 = XInternAtom(xw.display, "UTF_STRING", True);
+	atoms.utf8 = XInternAtom(xw.display, "UTF8_STRING", True);
 	if (atoms.utf8 == None)
 		atoms.utf8 = XA_STRING;
 
