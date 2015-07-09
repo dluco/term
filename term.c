@@ -334,9 +334,9 @@ static void tty_read(void)
 
 	// FIXME
 	DEBUG("%s", buf);
-	//XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
-	//XFlush(xw.display);
-	//
+//	XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
+//	XFlush(xw.display);
+	
 	for (p = buf; *p; p++) {
 		term_putc(*p);
 	}
