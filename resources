@@ -1,19 +1,23 @@
-term.color0:	#000000
-term.color1:	#FF00FF
-term.color2:	#FF00FF
-term.color3:	#FF00FF
-term.color4:	#FF00FF
-term.color5:	#FF00FF
-term.color6:	#FF00FF
-term.color7:	#FF00FF
+term.font:			fixed
+term.borderWidth:	0
+term.geometry:		80x24+0+0
 
-term.color8:	#FF00FF
-term.color9:	#FF0000
-term.color10:	#00FF00
-term.color11:	#FF00FF
-term.color12:	#0000FF
-term.color13:	#FF00FF
-term.color14:	#FF00FF
-term.color15:	#FFFFFF
+term.color0:		#000000
+term.color1:		#FF00FF
+term.color2:		#FF00FF
+term.color3:		#FF00FF
+term.color4:		#FF00FF
+term.color5:		#FF00FF
+term.color6:		#FF00FF
+term.color7:		#FF00FF
+
+term.color8:		#FF00FF
+term.color9:		#FF0000
+term.color10:		#00FF00
+term.color11:		#FF00FF
+term.color12:		#0000FF
+term.color13:		#FF00FF
+term.color14:		#FF00FF
+term.color15:		#FFFFFF
 
 ! vim: ft=xdefaults syn=xdefaults
