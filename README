@@ -1,4 +1,3 @@
 term
-==
-
+----
 simple virtual terminal emulator based on xlib.
