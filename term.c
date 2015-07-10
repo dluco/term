@@ -19,15 +19,9 @@
 #include <X11/Xresource.h>
 #include <pty.h>
 
+#include "term.h"
+
 static char *argv0;
-
-#define VERSION "0.0.0"
-
-/* Debug levels */
-#define D_FATAL	0
-#define D_WARN	1
-
-#define DEBUG_LEVEL D_WARN
 
 /* Macros */
 #define DEBUG(msg, ...) \
@@ -1483,7 +1477,7 @@ int main(int argc, char *argv[])
 		if (OPT("-h"))
 			usage();
 		else if (OPT("-v")) {
-			printf("%s %s\n", argv0, VERSION);
+			printf("%s %s, %s\n", argv0, VERSION, AUTHOR);
 			exit(EXIT_SUCCESS);
 		} else if (OPTARG("-f"))
 			dc.font.name = *arg;
