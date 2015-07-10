@@ -6,9 +6,11 @@
 #include <limits.h>
 #include <errno.h>
 #include <unistd.h>
+#include <pwd.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <sys/select.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -20,12 +22,12 @@
 static char *argv0;
 
 #define VERSION "0.0.0"
-#define DEBUG_LEVEL 0
 
+/* Debug levels */
 #define D_FATAL	0
 #define D_WARN	1
 
-#define XK_ANY_MOD	UINT_MAX
+#define DEBUG_LEVEL D_WARN
 
 /* Macros */
 #define DEBUG(msg, ...) \
@@ -50,6 +52,8 @@ static char *argv0;
 
 #define XEMBED_FOCUS_IN		4
 #define XEMBED_FOCUS_OUT	5
+
+#define XK_ANY_MOD	UINT_MAX
 
 /* Enums */
 enum window_state {
@@ -173,6 +177,7 @@ typedef struct {
 /* Function prototypes */
 static ssize_t swrite(int fd, const void *buf, size_t count);
 static size_t sstrlen(const char *s);
+static void die(const char *fmt, ...);
 
 static void tty_read(void);
 static void tty_write(const char *s, size_t len);
@@ -926,7 +931,7 @@ static void load_font(XFont *font, char *font_name)
 {
 	/* Try to load and retrieve font structuce */
 	if (!(font->font_info = XLoadQueryFont(xw.display, font_name))) {
-		die("Failed to load font '%s'", font_name);
+		die("Failed to load font \"%s\"", font_name);
 	}
 	/* Get (max) font dimensions */
 	font->width = font_max_width(font->font_info);
@@ -969,7 +974,7 @@ static void load_colors(void)
 
 		if (!XAllocNamedColor(xw.display, xw.colormap, name,
 					&dc.colors[i], &dc.colors[i]))
-			die("Failed to allocate color '%s'", name);
+			die("Failed to allocate color \"%s\"", name);
 	}
 	/* Load xterm colors [16-231] */
 	for (i = 16; i < 232; i++) {
@@ -1078,7 +1083,7 @@ static void x_init(void)
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
-		die("Cannot open X display");
+		die("Cannot open X display \"%s\"", XDisplayName(xw.display_name));
 
 	/* Get default screen and visual */
 	xw.screen = XDefaultScreen(xw.display);
@@ -1340,14 +1345,37 @@ void main_loop(void)
  */
 static void exec_cmd(void)
 {
-	char *prog, **args;
+	const struct passwd *pw;
+	char *shell, *prog, **args;
+	char buf[sizeof(long)*8 + 1];
 
-	if (cmd)
+	if (!(pw = getpwuid(getuid()))) {
+		die("getpwuid: %s", strerror(errno));
+	}
+
+	/* Get the user's shell */
+	if (!(shell = getenv("SHELL")) && !(shell = pw->pw_shell)) {
+		shell = config_shell;
+	}
+
+	if (cmd) {
 		prog = *cmd;
-	else if (!(prog = getenv("SHELL")))
+		args = cmd;
+	} else {
 		prog = shell;
+		args = (char *[]) {shell, NULL};
+	}
 
-	args = (cmd) ? cmd : (char *[]) {prog, NULL};
+	snprintf(buf, sizeof(buf), "%lu", xw.win);
+
+	/* Set up environment */
+	unsetenv("COLUMNS");
+	unsetenv("LINES");
+	setenv("USER", pw->pw_name, 1);
+	setenv("LOGNAME", pw->pw_name, 1);
+	setenv("SHELL", shell, 1);
+	setenv("HOME", pw->pw_dir, 1);
+	setenv("WINDOWID", buf, 1);
 
 	/* Default signal handlers */
 	signal(SIGALRM, SIG_DFL);
@@ -1357,7 +1385,9 @@ static void exec_cmd(void)
 	signal(SIGQUIT, SIG_DFL);
 	signal(SIGTERM, SIG_DFL);
 
-	execvp(prog, args);
+	if (execvp(prog, args) < 0) {
+		die("%s", strerror(errno));
+	}
 }
 
 /*
@@ -1365,16 +1395,19 @@ static void exec_cmd(void)
  */
 void sigchld(int signal)
 {
-	int status, ret;
+	int status;
+
+	if (signal != SIGCHLD)
+		return;
 
 	if (waitpid(tty.pid, &status, 0) < 0)
-		die("Waiting for pid %hd failed: %s", tty.pid, strerror(errno));
+		debug(D_WARN, "waiting for pid %hd failed: %s", tty.pid, strerror(errno));
 
-	ret = WIFEXITED(status) ? WEXITSTATUS(status) : EXIT_FAILURE;
-	if (ret != EXIT_SUCCESS)
-		die("child exited with error '%d'", status);
+	if (WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS)
+		exit(EXIT_SUCCESS);
 
-	exit(EXIT_SUCCESS);
+	debug(D_WARN, "child exited with status %d", status);
+	exit(EXIT_FAILURE);
 }
 
 /*
@@ -1391,7 +1424,7 @@ static void tty_init(void)
 
 	switch (tty.pid = fork()) {
 	case -1:
-		die("fork failed");
+		die("fork: %s", strerror(errno));
 		break;
 	case 0:		/* CHILD */
 		/* Create a new process group */
@@ -1438,7 +1471,7 @@ int main(int argc, char *argv[])
 
 #define OPT(s)  (strcmp(*arg, (s)) == 0)
 #define OPTARG(s) (OPT((s)) && (*(arg+1) ? (arg++, 1) :\
-			(die("option '%s' requires an argument", (s)), 0)))
+			(die("option \"%s\" requires an argument", (s)), 0)))
 
 	/* Parse options and arguments */
 	for (arg = argv+1; *arg; arg++) {
@@ -1468,7 +1501,7 @@ int main(int argc, char *argv[])
 			cmd = arg; // All remaining args are part of command
 			break;
 		} else {
-			die("unknown option %s", *arg);
+			die("unknown option \"%s\"", *arg);
 		}
 	}
 	if (!res_name) {

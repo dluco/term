@@ -1,4 +1,4 @@
-static char *shell = "/bin/sh";
+static char *config_shell = "/bin/sh";
 
 static Shortcut shortcuts[] = {
 	{ ShiftMask,				XK_Insert,	sc_paste_sel },
