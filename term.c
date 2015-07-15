@@ -44,6 +44,8 @@ static char *argv0;
 #define DEFAULT_ROWS	24
 #define DEFAULT_FONT	"fixed"
 
+#define MAX_TARGETS		6
+
 #define XEMBED_FOCUS_IN		4
 #define XEMBED_FOCUS_OUT	5
 
@@ -121,17 +123,6 @@ typedef struct {
 	KeySym keysym;
 	void (*func)(XKeyEvent *xkey);
 } Shortcut;
-
-typedef struct {
-	Atom wmdeletewin;
-	Atom xembed;
-	Atom clipboard;
-	Atom timestamp;
-	Atom targets;
-	Atom delete;
-	Atom text;
-	Atom utf8;
-} Atoms;
 
 static char *color_names[] = {
 	"black",
@@ -251,7 +242,6 @@ static TTY tty;
 static XWindow xw;
 static Term term;
 static Selection sel;
-static Atoms atoms;
 static DC dc;
 static XResources xres;
 static XrmDatabase rDB;
@@ -259,6 +249,13 @@ static char *res_name = NULL;
 static char *res_class = RES_CLASS;
 static char **cmd = NULL;
 
+static Atom wmdeletewin_atom;
+static Atom xembed_atom;
+static Atom clipboard_atom;
+static Atom timestamp_atom;
+static Atom targets_atom;
+static Atom text_atom;
+static Atom utf8_atom;
 
 /*
  * Write count bytes to fd.
@@ -423,11 +420,11 @@ static void event_brelease(XEvent *event)
  */
 static void event_cmessage(XEvent *event)
 {
-	if (event->xclient.data.l[0] == atoms.wmdeletewin) {
+	if (event->xclient.data.l[0] == wmdeletewin_atom) {
 		/* Destroy window */
 		XCloseDisplay(xw.display);
 		exit(EXIT_SUCCESS);
-	} else if (event->xclient.message_type == atoms.xembed && event->xclient.format == 32) {
+	} else if (event->xclient.message_type == xembed_atom && event->xclient.format == 32) {
 		/* XEmbed message */
 		if (event->xclient.data.l[1] == XEMBED_FOCUS_IN) {
 			xw.state |= WIN_FOCUSED;
@@ -514,7 +511,7 @@ static void event_selnotify(XEvent *event)
 {
 	XSelectionEvent *xsev;
 	ulong offset, nitems, after;
-	Atom type;
+	Atom target;
 	int format;
 	uchar *data;
 
@@ -528,12 +525,17 @@ static void event_selnotify(XEvent *event)
 	/* Get selection contents in chunks */
 	offset = 0L;
 	do {
-		/*
-		 * TODO: length of retreived chunk?
-		 */
 		XGetWindowProperty(xw.display, xw.win, xsev->property,
 				offset, BUFSIZ/4, False, (Atom)AnyPropertyType,
-				&type, &format, &nitems, &after, &data);
+				&target, &format, &nitems, &after, &data);
+
+		if (target != sel.target || target != XA_STRING ||
+				target != text_atom) {
+			/* non-TEXT target */
+			debug(D_WARN, "selection notify: unhandled target 0x%lx",
+					target);
+			break;
+		}
 
 		puts((char *)data);
 
@@ -569,14 +571,11 @@ static void event_selrequest(XEvent *event)
 		xsrev->property = xsrev->target;
 	}
 
-	/*
-	 * TODO: handle MULTIPLE, DELETE requests
-	 */
-	if (xsrev->target == atoms.timestamp) {
+	if (xsrev->target == timestamp_atom) {
 		/* TIMESTAMP request: return timestamp used to acquire selection */
 		if (xsrev->selection == XA_PRIMARY) {
 			timestamp = sel.sel_time;
-		} else if (xsrev->selection == atoms.clipboard) {
+		} else if (xsrev->selection == clipboard_atom) {
 			timestamp = sel.clip_time;
 		} else {
 			debug(D_WARN, "timestamp request: unhandled selection: 0x%lx",
@@ -588,20 +587,20 @@ static void event_selrequest(XEvent *event)
 		XChangeProperty(xsev.display, xsev.requestor, xsev.property,
 				XA_INTEGER, 32, PropModeReplace,
 				(uchar *)timestamp, 1);
-	} else if (xsrev->target == atoms.targets) {
+	} else if (xsrev->target == targets_atom) {
 		/* TARGETS request: return list of supported targets */
-		Atom supported[5] = { atoms.timestamp, atoms.targets, XA_STRING, atoms.text, atoms.utf8 };
+		Atom supported[3] = { XA_STRING, text_atom, utf8_atom };
 
 		xsev.property = xsrev->property;
 		XChangeProperty(xsev.display, xsev.requestor, xsev.property,
 				XA_ATOM, 32, PropModeReplace,
 				(uchar *)supported, LEN(supported));
 	} else if (xsrev->target == sel.target || xsrev->target == XA_STRING
-			|| xsrev->target == atoms.text) {
+			|| xsrev->target == text_atom) {
 		/* STRING, TEXT request */
 		if (xsrev->selection == XA_PRIMARY) {
 			sel_text = sel.primary;
-		} else if (xsrev->selection == atoms.clipboard) {
+		} else if (xsrev->selection == clipboard_atom) {
 			sel_text = sel.clipboard;
 		} else {
 			debug(D_WARN, "text request: unhandled selection: 0x%lx",
@@ -622,7 +621,7 @@ static void event_selrequest(XEvent *event)
 
 	if (!XSendEvent(xsev.display, xsev.requestor,
 				False, (ulong)NULL, (XEvent *)&xsev))
-		debug(D_WARN, "Error sending SelectionNotify event");
+		debug(D_WARN, "error sending SelectionNotify event");
 }
 
 /*
@@ -642,7 +641,7 @@ static void sc_paste_sel(XKeyEvent *xkey)
 
 static void sc_paste_clip(XKeyEvent *xkey)
 {
-	sel_convert(atoms.clipboard, xkey->time);
+	sel_convert(clipboard_atom, xkey->time);
 }
 
 static void sc_copy_clip(XKeyEvent *xkey)
@@ -652,7 +651,7 @@ static void sc_copy_clip(XKeyEvent *xkey)
 	}
 	if (sel.primary != NULL) {
 		sel.clipboard = strdup(sel.primary);
-		if (sel_own(atoms.clipboard, xkey->time))
+		if (sel_own(clipboard_atom, xkey->time))
 			sel.clip_time = xkey->time;
 	}
 }
@@ -808,7 +807,7 @@ static void sel_init(void)
 {
 	sel.primary = NULL;
 	sel.clipboard = NULL;
-	sel.target = atoms.utf8;
+	sel.target = utf8_atom;
 }
 
 static void sel_convert(Atom selection, Time time)
@@ -1073,7 +1072,7 @@ static void x_init(void)
 	XGCValues gcvalues;
 	pid_t pid = getpid();
 	char *s;
-	Atom netwmpid;
+	Atom netwmpid_atom;
 
 	/* Open connection to X server */
 	if (!(xw.display = XOpenDisplay(xw.display_name)))
@@ -1149,20 +1148,19 @@ static void x_init(void)
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, 0, 0, xw.width, xw.height);
 
 	/* Get atom(s) */
-	atoms.wmdeletewin = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
-	netwmpid = XInternAtom(xw.display, "_NET_WM_PID", False);
-	atoms.xembed = XInternAtom(xw.display, "_XEMBED", False);
-	atoms.timestamp = XInternAtom(xw.display, "TIMESTAMP", False);
-	atoms.targets = XInternAtom(xw.display, "TARGETS", False);
-	atoms.text = XInternAtom(xw.display, "TEXT", False);
-	atoms.clipboard = XInternAtom(xw.display, "CLIPBOARD", False);
-	atoms.delete = XInternAtom(xw.display, "DELETE", False);
-	atoms.utf8 = XInternAtom(xw.display, "UTF8_STRING", True);
-	if (atoms.utf8 == None)
-		atoms.utf8 = XA_STRING;
+	wmdeletewin_atom = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
+	netwmpid_atom = XInternAtom(xw.display, "_NET_WM_PID", False);
+	xembed_atom = XInternAtom(xw.display, "_XEMBED", False);
+	timestamp_atom = XInternAtom(xw.display, "TIMESTAMP", False);
+	targets_atom = XInternAtom(xw.display, "TARGETS", False);
+	text_atom = XInternAtom(xw.display, "TEXT", False);
+	clipboard_atom = XInternAtom(xw.display, "CLIPBOARD", False);
+	utf8_atom = XInternAtom(xw.display, "UTF8_STRING", True);
+	if (utf8_atom == None)
+		utf8_atom = XA_STRING;
 
-	XSetWMProtocols(xw.display, xw.win, &atoms.wmdeletewin, 1);
-	XChangeProperty(xw.display, xw.win, netwmpid, XA_CARDINAL, 32,
+	XSetWMProtocols(xw.display, xw.win, &wmdeletewin_atom, 1);
+	XChangeProperty(xw.display, xw.win, netwmpid_atom, XA_CARDINAL, 32,
 			PropModeReplace, (uchar *)&(pid), 1);
 
 	/* (Re)set window title */
