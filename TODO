@@ -1,6 +1,10 @@
 TODO:
 
-- use XFontSets?
+- use XFontSets:
+	- look at XTerm/fontutils.c:
+		- bold_name_font()
+		- derive_font_name()
+		- get_font_name_props()
 
 - colors:
 	- color array -> DONE
@@ -35,3 +39,4 @@ TODO:
 EXTRAS:
 
 - reload configuration file on receive SIGUSER1
+- print selected text to stdout, so that a script can pick up urls and open them in a browser

@@ -93,6 +93,8 @@ typedef struct {
 	Visual *visual;				/* default visual */
 	Colormap colormap;			/* default colormap */
 	XSetWindowAttributes attrs;	/* window attributes */
+	XIM xim;					/* X input method */
+	XIC xic;					/* X input context */
 	int screen;					/* display screen */
 	Window parent;				/* Parent window */
 	int geomask;				/* geometry mask */
@@ -124,29 +126,6 @@ typedef struct {
 	void (*func)(XKeyEvent *xkey);
 } Shortcut;
 
-static char *color_names[] = {
-	"black",
-	"red3",
-	"green3",
-	"yellow3",
-	"blue3",
-	"magenta3",
-	"cyan3",
-	"gray90",
-
-	"gray30",
-	"red",
-	"green",
-	"yellow",
-	"blue",
-	"magenta",
-	"cyan",
-	"white",
-};
-
-int color_fg = 7;
-int color_bg = 0;
-
 /* Drawing context */
 typedef struct {
 	GC gc;
@@ -174,6 +153,7 @@ static void draw_region(int col1, int row1, int col2, int row2);
 static void redraw(void);
 
 static void term_putc(char c);
+static void term_moveto(int x, int y);
 static void term_resize(int cols, int rows);
 static void term_clear(int x1, int y1, int x2, int y2);
 static void term_setdirty(int top, int bottom);
@@ -359,8 +339,7 @@ static void tty_resize(int cols, int rows)
 	tty.ws.ws_ypixel = rows * xw.ch;
 
 	if (ioctl(tty.fd, TIOCSWINSZ, &tty.ws) < 0)
-		debug(D_WARN, "Unable to set window size: %s",
-				strerror(errno));
+		debug(D_WARN, "unable to set window size: %s", strerror(errno));
 }
 
 static int x_error_handler(Display *display, XErrorEvent *ev)
@@ -384,7 +363,7 @@ static void event_keypress(XEvent *event)
 	Shortcut *sc;
 	int len;
 
-	len = XLookupString(key_event, buf, sizeof(buf), &keysym, NULL);
+	len = XmbLookupString(xw.xic, key_event, buf, sizeof(buf), &keysym, NULL);
 
 	/* Shortcuts */
 	for (sc = shortcuts; sc < shortcuts+LEN(shortcuts); sc++) {
@@ -400,6 +379,7 @@ static void event_keypress(XEvent *event)
 	DEBUG("key pressed: %s", buf);
 
 	// FIXME
+
 	tty_write(buf, len);
 }
 
@@ -472,9 +452,11 @@ static void event_focus(XEvent *event)
 	if (event->type == FocusIn) {
 		xw.state |= WIN_FOCUSED;
 		set_urgency(0);
+		XSetICFocus(xw.xic);
 		DEBUG("FOCUS IN");
 	} else {
 		xw.state &= ~WIN_FOCUSED;
+		XUnsetICFocus(xw.xic);
 		DEBUG("FOCUS OUT");
 	}
 }
@@ -691,6 +673,8 @@ static void draw_region(int col1, int row1, int col2, int row2)
 		term.dirty[row] = False;
 
 		/* ... */
+		XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0,
+				term.line[row], sstrlen(term.line[row]));
 	}
 }
 
@@ -708,8 +692,16 @@ static void redraw(void)
  */
 static void term_putc(char c)
 {
-	
-	return;
+	term.line[term.cursor.y][term.cursor.x] = c;
+	term.dirty[term.cursor.y] = True;
+
+	term_moveto(++term.cursor.x, term.cursor.y);
+}
+
+static void term_moveto(int x, int y)
+{
+	term.cursor.x = LIMIT(x, 0, term.cols-1);
+	term.cursor.y = LIMIT(y, 0, term.rows-1);
 }
 
 /*
@@ -831,10 +823,10 @@ static Bool sel_own(Atom selection, Time time)
 
 static void sel_copy(Time time)
 {
-	/* TODO: get text selection for primary */
 	if (sel.primary)
 		free(sel.primary);
 
+	/* TODO: get text selection for primary */
 	sel.primary = strdup("text");
 
 	if (sel_own(XA_PRIMARY, time))
@@ -1147,6 +1139,21 @@ static void x_init(void)
 	XSetForeground(xw.display, dc.gc, dc.colors[color_bg].pixel);
 	XFillRectangle(xw.display, xw.drawbuf, dc.gc, 0, 0, xw.width, xw.height);
 
+	/* Input method(s) and input context */
+	XSetLocaleModifiers("");
+	if (!( xw.xim = XOpenIM(xw.display, rDB, res_name, res_class))) {
+		XSetLocaleModifiers("@im=local");
+		if (!( xw.xim = XOpenIM(xw.display, rDB, res_name, res_class))) {
+			XSetLocaleModifiers("@im=");
+			if (!( xw.xim = XOpenIM(xw.display, rDB, res_name, res_class)))
+				die("could not open input device");
+		}
+	}
+	xw.xic = XCreateIC(xw.xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+			XNClientWindow, xw.win, XNFocusWindow, xw.win, NULL);
+	if (!xw.xic)
+		die("could not create input context");
+
 	/* Get atom(s) */
 	wmdeletewin_atom = XInternAtom(xw.display, "WM_DELETE_WINDOW", False);
 	netwmpid_atom = XInternAtom(xw.display, "_NET_WM_PID", False);
@@ -1328,6 +1335,9 @@ void main_loop(void)
 			if (event_handler[event.type])
 				(event_handler[event.type])(&event);
 		}
+
+		draw();
+		XFlush(xw.display);
 	}
 }
 
@@ -1378,7 +1388,7 @@ static void exec_cmd(void)
 	signal(SIGTERM, SIG_DFL);
 
 	if (execvp(prog, args) < 0) {
-		die("%s", strerror(errno));
+		exit(EXIT_FAILURE);
 	}
 }
 
@@ -1502,7 +1512,6 @@ int main(int argc, char *argv[])
 
 	/* Set up locale */
 	setlocale(LC_CTYPE, "");
-	XSetLocaleModifiers("");
 
 	term_init(cols, rows);
 	x_init();
