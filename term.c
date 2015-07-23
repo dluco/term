@@ -108,9 +108,9 @@ typedef struct {
 
 /* Font structure */
 typedef struct {
-	XFontStruct *font_info;
-	int width;
-	int height;
+	XFontSet font_set;
+	int ascent, descent;
+	int width, height;
 	char *name;
 } XFont;
 
@@ -169,7 +169,6 @@ static void sel_copy(Time time);
 static void set_title(char *title);
 static void set_urgency(int urgent);
 static void load_font(XFont *font, char *font_name);
-static int font_max_width(XFontStruct *font_info);
 static void xwindow_clear(int col1, int row1, int col2, int row2);
 static void xwindow_abs_clear(int x1, int y1, int x2, int y2);
 static void xwindow_resize(int cols, int rows);
@@ -310,7 +309,9 @@ static void tty_read(void)
 
 	// FIXME
 	DEBUG("%s", buf);
-//	XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0, buf, len);
+//	XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
+//	XmbDrawString(xw.display, xw.win, dc.font.font_set, dc.gc,
+//			0, 0, buf, strlen(buf));
 //	XFlush(xw.display);
 	
 	for (p = buf; *p; p++) {
@@ -670,11 +671,12 @@ static void draw_region(int col1, int row1, int col2, int row2)
 
 		/* Clear current row in buffer and reset dirtyness */
 		xwindow_clear(0, row, term.cols, row);
-		term.dirty[row] = False;
+//		term.dirty[row] = False;
 
-		/* ... */
-		XDrawString(xw.display, xw.drawbuf, dc.gc, 0, 0,
-				term.line[row], sstrlen(term.line[row]));
+		/* TODO ... */
+		XSetForeground(xw.display, dc.gc, dc.colors[color_fg].pixel);
+		XmbDrawString(xw.display, xw.drawbuf, dc.font.font_set, dc.gc,
+				0, 0, term.line[row], sstrlen(term.line[row]));
 	}
 }
 
@@ -914,37 +916,44 @@ static void set_hints(void)
  */
 static void load_font(XFont *font, char *font_name)
 {
-	/* Try to load and retrieve font structuce */
-	if (!(font->font_info = XLoadQueryFont(xw.display, font_name))) {
-		die("Failed to load font \"%s\"", font_name);
+	XFontStruct **fonts;
+	XFontSetExtents *font_extents;
+	char **missing_charset_list;
+	int missing_charset_count;
+	char *def_string;
+	char **font_name_list;
+	int i;
+	int num_fonts;
+	int ascent, descent;
+
+	/* Try to create font set structure */
+	font->font_set = XCreateFontSet(xw.display, font_name,
+			&missing_charset_list, &missing_charset_count,
+			&def_string);
+	if (!font->font_set) {
+		die("failed to create font set \"%s\"", font_name);
 	}
-	/* Get (max) font dimensions */
-	font->width = font_max_width(font->font_info);
-	font->height = font->font_info->ascent + font->font_info->descent;
+	for (i = 0; i < missing_charset_count; i++) {
+		debug(D_WARN, "font for charset \"%s\" missing",
+				missing_charset_list[i]);
+	}
+
+	/* Get font metrics */
+	font_extents = XExtentsOfFontSet(font->font_set);
+	num_fonts = XFontsOfFontSet(font->font_set, &fonts, &font_name_list);
+	for (i = 0, ascent = 0, descent = 0; i < num_fonts; i++, fonts++) {
+		if (ascent < (*fonts)->ascent)
+			ascent = (*fonts)->ascent;
+		if (descent < (*fonts)->descent)
+			descent = (*fonts)->descent;
+	}
+	font->ascent = ascent;
+	font->descent = descent;
+	font->width = font_extents->max_logical_extent.width;
+	font->height = font_extents->max_logical_extent.height;
 
 	xw.cw = font->width;
 	xw.ch = font->height;
-}
-
-/*
- * Get widest character in specified font.
- *
- * Courtesy: rxvt-2.7.10/src/main.c
- */
-static int font_max_width(XFontStruct *font)
-{
-	int i, width = 0;
-
-	if (font->min_bounds.width == font->max_bounds.width)
-		return font->min_bounds.width;
-	if (font->per_char == NULL)
-		return font->max_bounds.width;
-
-	for (i = (font->max_char_or_byte2 - font->min_char_or_byte2); i >= 0; i--) {
-		width = MAX(width, font->per_char[i].width);
-	}
-
-	return width;
 }
 
 static void load_colors(void)
